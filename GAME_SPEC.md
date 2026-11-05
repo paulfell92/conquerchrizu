@@ -34,7 +34,7 @@ Do not edit another module's files. If the contract (types.ts, index.ts signatur
 - Multiple squads given one move get a simple formation: destination offsets on a ring/grid around the click point (deterministic by squad id order) so they don't stack.
 - Separation: overlapping own squads push each other apart slightly (integer, deterministic). Squads never enter blocked tiles.
 
-**Capture points.** Each second (every 20 ticks): count non-ram squads of each player within `captureRadius`. If only one player is present and the point is not already fully theirs, progress moves toward that player by `captureRatePerSquad × min(count,3)` per second. Progress model: a point owned by the enemy must first be neutralised (progress down to 0 → owner −1), then captured (progress up to `captureMax` → owner = capturer). Contested (both present) = no change. Empty = slowly regenerate 2/s back toward the current owner state. Emit `captured` on owner change. Upgrading (`upgradePoint`) costs `pointUpgradeCost`, sets level 2 (+50 % income); captured points lose their level (back to 1).
+**Capture points.** Each second (every 20 ticks): count non-ram squads of each player within `captureRadius`. If only one player is present and the point is not already fully theirs, progress moves toward that player by `captureRatePerSquad × min(count,3)` per second. Progress model: a point owned by the enemy must first be neutralised (progress down to 0 → owner −1), then captured (progress up to `captureMax` → owner = capturer). Contested (both present) = no change. Empty = slowly regenerate 2/s back toward the current owner state. Emit `captured` on owner change. Upgrading (`upgradePoint`) costs `pointUpgradeCost`, sets level 2 (+50 % income); a second upgrade gives level 3 (see below); captured points lose their level (back to 1).
 
 **Economy.** Once per second each player gains `townCenterIncome` + income of owned points (level 2 = 150 %, truncated). `stats.resourcesGathered` += total.
 
@@ -53,6 +53,22 @@ Do not edit another module's files. If the contract (types.ts, index.ts signatur
 **Under attack.** Emit `underAttack` for a player at most once per 10 s per 8-tile area when their squad/building takes damage (client shows a warning + jump button).
 
 **Start.** Each player: TC (full hp), start resources, start squads per map (`startSquads`), age 1, pop counting the start squads. All 13 points neutral.
+
+**Peace phase.** `config.peaceTicks` (default 0): while `tick < peaceTicks` there is no damage between players (squads, towers, TC; nothing acquires enemy targets), `attack` on enemy entities is rejected („Friedenszeit“), enemy-owned points cannot be neutralised (neutral points can be captured), no VP drain. `{t:'peaceOver'}` is emitted once on the tick peace ends. Hard cap and VP-drain doubling are measured from the end of peace. `config.players[i].incomePct` (default 100) scales TC/point income and bounty (integer, truncated per payout).
+
+**Rally for all.** `rallyAll {x,y}` sets `PlayerState.defaultRally` and the rally of every own building that trains units; buildings completed later inherit `defaultRally`.
+
+**Point level 3.** `upgradePoint` on a level-2 point → level 3 (200 % income), costs `pointLevel3UpgradeCost` (wood 300, gold 150), requires age 2. Neutralised/captured points drop back to level 1.
+
+**Point towers.** `fortifyPoint {point}` builds a `pointtower` (slot −2, `Building.point` = point id) on an own point: wood 150 / gold 50, 15 s, hp 1000, dmg 8, range 5000, cooldown 24, age 2, max 1 per point and 4 per player. While a completed point tower stands, the enemy cannot reduce that point's progress. An unfinished tower is destroyed when its point is neutralised. It shoots enemy squads like a tower (not during peace). Point towers do not count toward age requirements.
+
+**Techs (additional).** `housing1` (TC, age 2, food 200 / wood 200, 30 s, popCap +3), `housing2` (TC, age 3, food 300 / wood 300, 40 s, +3), `armor2` (blacksmith, age 3, food 300 / gold 200, 40 s, another −15 % damage taken).
+
+**Mercenaries.** `hire {unit}`: needs own TC, age ≥ 2 and the unit's age; price = (food+wood+gold) × `hireCostPct` (150 %) paid in gold only; spawns instantly next to the TC (toward the rally) without queue; needs pop; per-player cooldown `hireCooldownTicks` (45 s, `PlayerState.hireReadyTick`). Reject reason during cooldown: „Söldner erst wieder in m:ss“.
+
+**Scenarios.** `config.scenario` (type `Scenario`) is applied by `createGame`: per-player `startRes`, `age`, `vpStart`, `popCap`, `techs`; `extraSquads` (tile coords, optional `hpPct`); `extraBuildings` (slot 0..7, or `kind:'pointtower'` with `point` = point name; `built`); `pointOwners` (by name, optional level); `removeStartSquads`; `vpEnabled:false` (no VP drain/loss, no VP defeat; timeout = draw); `hardCapTicks` override. Mission objectives are evaluated by the client, which ends the game through the relay with `{t:'objective', won}` (winner = issuer if won, else the opponent; WinReason `'objective'`; only valid in scenario games).
+
+**Replay.** `replay(config, log, untilTick?)` re-runs `createGame(config)` with a relay command log and returns the identical state.
 
 ## Client UX requirements (mobile first)
 
