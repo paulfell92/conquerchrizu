@@ -1,0 +1,21 @@
+{
+  "name": "conquer-chrizu",
+  "version": "0.1.0",
+  "description": "Conquer Chrizu – Browser-RTS (Gebiete & Trupps)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "simulate": "tsx tools/simulate.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5",
+    "vite-plugin-singlefile": "^2.3.4",
+    "vitest": "^3.2.7"
+  },
+  "private": true,
+  "type": "module"
+}
