@@ -13,7 +13,7 @@
  *  - tactics    every few ticks (reaction time): focus fire, retreat
  * Difficulty scales reaction time, command budget (cpm) and decision noise.
  */
-import type { Command, GameState, PlayerId } from '../sim';
+import type { Age, Command, GameState, PlayerId } from '../sim';
 import { Brain, makeCtx } from './brain';
 import type { BotStats, Stance } from './brain';
 import { runOperations } from './operations';
@@ -22,6 +22,8 @@ import { hashSeed } from './rng';
 import { runStrategy } from './strategy';
 import { runTactics } from './tactics';
 import { buildView } from './view';
+import { UNITS } from '../content';
+import type { SinkUse } from './sinks';
 
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export type Personality = 'rusher' | 'boomer' | 'turtle';
@@ -38,7 +40,13 @@ export interface BotOptions {
    * never attacks or approaches the other half, ignores the end of peace.
    */
   passive?: boolean;
+  /** Campaign: scales attack thresholds/timing. 0.5 = cautious, 1 = default, 1.5 = reckless. */
+  aggression?: number;
+  /** Campaign: the bot never researches beyond this age. */
+  maxAge?: Age;
 }
+
+export { PERSONALITY_INFO, PERSONALITY_LIST } from './personalities';
 
 /** Income handicap for the bot player; pass as GameConfig.players[i].incomePct. */
 export function difficultyIncomePct(d: Difficulty): number {
@@ -56,7 +64,7 @@ export class Bot {
 
   constructor(readonly options: BotOptions) {
     this._personality = options.personality ?? personalityFromSeed(options.seed);
-    this.brain = new Brain(options.player, options.difficulty, this._personality, options.seed, options.passive ?? false);
+    this.brain = new Brain(options.player, options.difficulty, this._personality, options.seed, options.passive ?? false, options.aggression ?? 1, options.maxAge ?? 3);
   }
 
   /** Called once per sim tick, after step(). Returns commands to submit now (usually []). */
@@ -69,7 +77,11 @@ export class Bot {
     const elapsed = b.lastTick < 0 ? 1 : Math.max(0, tick - b.lastTick);
     b.lastTick = tick;
     b.tokens = Math.min(b.tokenCap, b.tokens + (elapsed * b.diff.cpm) / (60 * 20));
-    for (const e of s.events) if (e.t === 'rejected' && e.owner === b.me) b.stats.rejectedBySim++;
+    for (const e of s.events) {
+      if (e.t === 'rejected' && e.owner === b.me) b.stats.rejectedBySim++;
+      // own squad losses are public to their owner (used for "hire after losses")
+      else if (e.t === 'death' && e.owner === b.me && e.kind in UNITS) b.lossTicks.push(tick);
+    }
 
     const t = tick + b.offset;
     const doTactics = t % b.diff.tacticsEvery === 0;
@@ -99,8 +111,8 @@ export class Bot {
   }
 
   /** Debug info for tools/UI. */
-  get debug(): { stance: Stance; saving: string | null; stats: BotStats; groups: number } {
+  get debug(): { stance: Stance; saving: string | null; stats: BotStats; groups: number; sinks: SinkUse } {
     const b = this.brain;
-    return { stance: b.stance, saving: b.saving, stats: { ...b.stats }, groups: b.groups.length };
+    return { stance: b.stance, saving: b.saving, stats: { ...b.stats }, groups: b.groups.length, sinks: { ...b.sinkUse } };
   }
 }

@@ -90,10 +90,11 @@ export function membersOf(squad: Squad): number {
   return squad.hp <= 0 ? 0 : Math.ceil(squad.hp / hpm);
 }
 
-export function completedNonTcBuildings(state: GameState, player: PlayerId): number {
+/** Completed base buildings (no TC, no point towers) – the age requirement count. */
+export function completedBaseBuildings(state: GameState, player: PlayerId): number {
   let n = 0;
   for (const b of state.buildings) {
-    if (b.owner === player && b.kind !== 'towncenter' && b.buildTicksLeft === 0) n++;
+    if (b.owner === player && b.slot >= 0 && b.buildTicksLeft === 0) n++;
   }
   return n;
 }

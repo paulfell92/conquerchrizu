@@ -7,11 +7,12 @@
 import { slots } from '../sim';
 import type { Building, BuildingKind, Resources, TechId, UnitKind } from '../sim';
 import { BUILDINGS, RULES, TECHS, UNITS } from '../content';
-import { affordable, aggressionOk, costValue, emit, inPeace, peaceTicks, reserve, spend } from './brain';
+import { affordable, aggressionCaution, aggressionOk, costValue, emit, inPeace, peaceTicks, reserve, spend } from './brain';
 import type { Ctx } from './brain';
 import type { OpeningStep } from './personalities';
 import { basePower, believedEnemies, counterFactor, dangerAt, dist, enemyPowerEstimate, matchupPower, TPS } from './view';
 import type { View } from './view';
+import { maybeRallyAll, sinkCandidates } from './sinks';
 
 const MIN = 60 * TPS;
 
@@ -109,7 +110,7 @@ function tryTrain(ctx: Ctx, unit: UnitKind, at?: Building): boolean {
   spend(ctx.res, def.cost);
   ctx.pop += def.pop;
   ctx.queued.set(b.id, (ctx.queued.get(b.id) ?? 0) + 1);
-  if (!ctx.b.rallied.has(b.id)) {
+  if (!ctx.b.rallied.has(b.id) && !ctx.b.rallyAllDone) {
     // Rally just in front of the base, towards the map center.
     const v = ctx.v;
     const x = Math.trunc(v.myHome.x + (v.foeHome.x - v.myHome.x) * 0.18);
@@ -163,6 +164,7 @@ function tryUpgrade(ctx: Ctx): boolean {
   if (p === null) return false;
   if (!emit(ctx, { t: 'upgradePoint', point: p })) return false;
   spend(ctx.res, cost);
+  ctx.b.sinkUse.upgrade2++;
   return true;
 }
 
@@ -270,7 +272,7 @@ export function updateStance(ctx: Ctx): void {
   }
   const vpLead = v.player.vp - v.foeVp;
   const late = v.tick > 14 * MIN;
-  const caution = b.diff.attackCaution;
+  const caution = b.diff.attackCaution * aggressionCaution(b);
   const hasRams = v.mySquads.some((s) => s.kind === 'ram');
   const armyPop = army.length;
 
@@ -333,7 +335,7 @@ export function runStrategy(ctx: Ctx): void {
   const cands: Candidate[] = [];
 
   // --- age up
-  if (age < 3) {
+  if (age < 3 && age < b.maxAge) {
     const tech: TechId = age === 1 ? 'age2' : 'age3';
     const def = TECHS[tech];
     const armyNeed = age === 1 ? b.pers.armyBeforeAge2 : b.pers.armyBeforeAge3;
@@ -405,6 +407,14 @@ export function runStrategy(ctx: Ctx): void {
     const minutes = v.tick / MIN;
     const score = b.pers.upgradeWeight * (minutes < 14 ? 0.85 : 0.4);
     cands.push({ name: 'upgrade', score: n(score), cost: RULES.pointUpgradeCost, run: () => tryUpgrade(ctx), save: false });
+  }
+
+  // --- round-3 sinks (point level 3, point towers, housing, armor2, mercenaries)
+  while (b.lossTicks.length > 0 && b.lossTicks[0] < v.tick - 60 * TPS) b.lossTicks.shift();
+  for (const c of sinkCandidates(ctx, n, b.lossTicks.length, b.sinkUse)) cands.push(c);
+  if (v.myBuildings.some((x) => x.kind === 'barracks' || x.kind === 'range' || x.kind === 'stable')) {
+    const x = Math.trunc(v.myHome.x + (v.foeHome.x - v.myHome.x) * 0.18);
+    maybeRallyAll(ctx, { x, y: v.myHome.y }, b.sinkUse);
   }
 
   // --- units

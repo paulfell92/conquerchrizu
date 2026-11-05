@@ -1028,6 +1028,36 @@ export class Renderer {
           g.arc(x + Math.cos(a) * d * 0.6, y + Math.sin(a) * d * 0.5 - t * 0.4, base * (0.35 + t * 0.4), 0, Math.PI * 2);
           g.fill();
         }
+      } else if (f.kind === 4) {
+        // command line: squad → target, fading
+        g.strokeStyle = f.color;
+        g.globalAlpha = 0.85 * (1 - t);
+        g.lineWidth = 2 / this.cam.zoom;
+        g.setLineDash([0.22, 0.16]);
+        g.lineDashOffset = -t * 1.5;
+        g.beginPath();
+        g.moveTo(f.x0 / TILE, f.y0 / TILE);
+        g.lineTo(f.x1 / TILE, f.y1 / TILE);
+        g.stroke();
+        g.setLineDash([]);
+        g.lineDashOffset = 0;
+        g.globalAlpha = 1;
+      } else if (f.kind === 5) {
+        // tap ripple: constant screen size
+        const z = this.cam.zoom;
+        const r = ((f.big ? 10 : 8) + t * (f.big ? 22 : 14)) / z;
+        g.strokeStyle = f.color;
+        g.globalAlpha = 0.9 * (1 - t);
+        g.lineWidth = (f.big ? 3 : 2) / z;
+        g.beginPath();
+        g.arc(f.x0 / TILE, f.y0 / TILE, r, 0, Math.PI * 2);
+        g.stroke();
+        if (f.big) {
+          g.beginPath();
+          g.arc(f.x0 / TILE, f.y0 / TILE, r * 0.55, 0, Math.PI * 2);
+          g.stroke();
+        }
+        g.globalAlpha = 1;
       } else if (f.kind === 3) {
         const x = f.x0 / TILE;
         const y = f.y0 / TILE;

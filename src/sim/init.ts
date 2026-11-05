@@ -1,5 +1,5 @@
 /** Initial state construction. */
-import { BUILDINGS, MAPS, RULES, UNITS } from '../content';
+import { BUILDINGS, MAPS, RULES, TECHS, UNITS } from '../content';
 import type { MapDef } from '../content';
 import type { Building, BuildingKind, CapturePoint, GameConfig, GameState, PlayerId, PlayerState, Squad, UnitKind, Vec } from './types';
 import { TILE } from './types';
@@ -98,7 +98,29 @@ export function createInitialState(config: GameConfig, version: string): GameSta
     popCap: RULES.popCap,
     surrendered: false,
     stats: { squadsTrained: 0, squadsLost: 0, squadsKilled: 0, pointsCaptured: 0, resourcesGathered: 0 },
+    defaultRally: null,
+    hireReadyTick: 0,
   }));
+  const sc = config.scenario;
+  // per-player scenario overrides
+  for (const pl of players) {
+    const sp = sc?.players?.[pl.id];
+    if (!sp) continue;
+    if (sp.startRes) pl.res = { food: Math.trunc(sp.startRes.food), wood: Math.trunc(sp.startRes.wood), gold: Math.trunc(sp.startRes.gold) };
+    if (typeof sp.vpStart === 'number') pl.vp = Math.trunc(sp.vpStart);
+    if (typeof sp.popCap === 'number') pl.popCap = Math.trunc(sp.popCap);
+    if (sp.age === 2 || sp.age === 3) {
+      pl.age = sp.age;
+      pl.techs.push('age2');
+      if (sp.age === 3) pl.techs.push('age3');
+    }
+    for (const t of sp.techs ?? []) {
+      if (!TECHS[t]) throw new Error(`Scenario: unknown tech ${t}`);
+      if (pl.techs.includes(t)) continue;
+      pl.techs.push(t);
+      pl.popCap += TECHS[t].popCapAdd ?? 0;
+    }
+  }
   const state: GameState = {
     version,
     config: JSON.parse(JSON.stringify(config)),
@@ -137,8 +159,18 @@ export function createInitialState(config: GameConfig, version: string): GameSta
     };
     state.points.push(cp);
   }
+  // scenario point owners
+  for (const po of sc?.pointOwners ?? []) {
+    const pt = state.points.find((q) => q.name === po.name);
+    if (!pt) throw new Error(`Scenario: unknown point ${po.name}`);
+    pt.owner = po.owner;
+    pt.capturer = po.owner;
+    pt.progress = po.owner === -1 ? 0 : RULES.captureMax;
+    pt.level = po.owner === -1 ? 1 : po.level ?? 1;
+  }
   // start squads
   for (const pid of [0, 1] as PlayerId[]) {
+    if (sc?.removeStartSquads?.includes(pid)) continue;
     const tc = map.towncenters[pid];
     for (const ss of map.startSquads) {
       const tx = pid === 0 ? tc.x + ss.dx : tc.x - ss.dx;
@@ -147,6 +179,35 @@ export function createInitialState(config: GameConfig, version: string): GameSta
       newSquad(state, pid, ss.kind, pos.x, pos.y);
       players[pid].pop += UNITS[ss.kind].pop;
     }
+  }
+  // scenario buildings
+  for (const eb of sc?.extraBuildings ?? []) {
+    const def = BUILDINGS[eb.kind];
+    if (!def || eb.kind === 'towncenter') throw new Error(`Scenario: invalid building ${eb.kind}`);
+    let b: Building;
+    if (eb.kind === 'pointtower') {
+      const pt = state.points.find((q) => q.name === eb.point);
+      if (!pt) throw new Error(`Scenario: point tower needs a known point name (${eb.point})`);
+      if (state.buildings.some((q) => q.point === pt.id)) throw new Error(`Scenario: point ${pt.name} already fortified`);
+      b = newBuilding(state, eb.owner, 'pointtower', -2, pt.x, pt.y, eb.built);
+      b.point = pt.id;
+    } else {
+      if (!Number.isInteger(eb.slot) || eb.slot < 0 || eb.slot >= map.slotOffsets.length) throw new Error(`Scenario: invalid slot ${eb.slot}`);
+      if (state.buildings.some((q) => q.owner === eb.owner && q.slot === eb.slot)) throw new Error(`Scenario: slot ${eb.slot} used twice`);
+      const pos = slotPos(map, eb.owner, eb.slot);
+      b = newBuilding(state, eb.owner, eb.kind, eb.slot, pos.x, pos.y, eb.built);
+    }
+  }
+  // scenario squads (tile coordinates)
+  for (const es of sc?.extraSquads ?? []) {
+    if (!UNITS[es.kind]) throw new Error(`Scenario: invalid unit ${es.kind}`);
+    const pos = nearestWalkable(state, Math.trunc(es.x) * TILE + 500, Math.trunc(es.y) * TILE + 500);
+    const s = newSquad(state, es.owner, es.kind, pos.x, pos.y);
+    if (typeof es.hpPct === 'number' && es.hpPct < 100) {
+      s.hp = Math.max(1, Math.trunc((s.maxHp * Math.max(1, Math.trunc(es.hpPct))) / 100));
+      s.members = Math.ceil(s.hp / UNITS[es.kind].hpPerMember);
+    }
+    players[es.owner].pop += UNITS[es.kind].pop;
   }
   return state;
 }

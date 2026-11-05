@@ -33,6 +33,16 @@ export const RULES = {
   } as Record<PointKind, Resources>,
   pointLevel2IncomePct: 150,
   pointUpgradeCost: { food: 0, wood: 150, gold: 50 } as Resources,
+  /** Level 2 -> 3 upgrade: needs age 2, income 200 %. */
+  pointLevel3IncomePct: 200,
+  pointLevel3UpgradeCost: { food: 0, wood: 300, gold: 150 } as Resources,
+  pointLevel3Age: 2 as Age,
+  /** Point towers (`fortifyPoint`): max per player; one per point. */
+  pointTowersPerPlayer: 4,
+  /** Mercenaries (`hire`): gold price = (food+wood+gold) * pct/100; then a per-player cooldown. */
+  hireCostPct: 150,
+  hireCooldownTicks: 45 * S,
+  hireMinAge: 2 as Age,
   /** Own squads near own TC or on own points heal when out of combat. */
   healPctPerSecond: 2,
   healOutOfCombatTicks: 5 * S,
@@ -153,7 +163,7 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   towncenter: {
     kind: 'towncenter', name: 'Dorfzentrum', short: 'DZ', age: 1,
     cost: { food: 0, wood: 0, gold: 0 }, buildTicks: 0, hp: 3000,
-    trains: ['scout'], researches: ['age2', 'age3'],
+    trains: ['scout'], researches: ['age2', 'age3', 'housing1', 'housing2'],
     dmg: 12, range: 6000, cooldownTicks: 30, sight: 8000, maxPerPlayer: 1,
     description: 'Herz der Basis. Fällt es, ist das Spiel verloren.',
   },
@@ -181,7 +191,7 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
   blacksmith: {
     kind: 'blacksmith', name: 'Schmiede', short: 'Sm', age: 1,
     cost: { food: 0, wood: 150, gold: 0 }, buildTicks: 15 * S, hp: 1000,
-    trains: [], researches: ['attack1', 'armor1', 'attack2'],
+    trains: [], researches: ['attack1', 'armor1', 'attack2', 'armor2'],
     dmg: 0, range: 0, cooldownTicks: 0, sight: 5000, maxPerPlayer: 1,
     description: 'Verbessert Angriff und Rüstung.',
   },
@@ -199,6 +209,13 @@ export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
     dmg: 10, range: 6500, cooldownTicks: 24, sight: 8000, maxPerPlayer: 3,
     description: 'Verteidigt die Basis mit Pfeilen.',
   },
+  pointtower: {
+    kind: 'pointtower', name: 'Wachturm', short: 'WT', age: 2,
+    cost: { food: 0, wood: 150, gold: 50 }, buildTicks: 15 * S, hp: 1000,
+    trains: [], researches: [],
+    dmg: 8, range: 5000, cooldownTicks: 24, sight: 7000, maxPerPlayer: 4,
+    description: 'Befestigt einen eigenen Punkt: Solange er steht, kann der Gegner den Punkt nicht einnehmen.',
+  },
 };
 
 // ---------------------------------------------------------------- techs
@@ -215,6 +232,7 @@ export interface TechDef {
   /** Effects (percent): applied to the player's squads, including existing ones. */
   dmgPct?: number; // +X % damage
   dmgTakenPct?: number; // -X % damage taken
+  popCapAdd?: number; // + pop cap (housing)
   description: string;
 }
 
@@ -243,6 +261,21 @@ export const TECHS: Record<TechId, TechDef> = {
     id: 'attack2', name: 'Gehärteter Stahl', building: 'blacksmith', age: 3,
     cost: { food: 300, wood: 0, gold: 200 }, researchTicks: 40 * S, requiresBuildings: 0,
     dmgPct: 15, description: 'Weitere +15 % Schaden.',
+  },
+  armor2: {
+    id: 'armor2', name: 'Plattenpanzer', building: 'blacksmith', age: 3,
+    cost: { food: 300, wood: 0, gold: 200 }, researchTicks: 40 * S, requiresBuildings: 0,
+    dmgTakenPct: 15, description: 'Weitere −15 % erlittener Schaden.',
+  },
+  housing1: {
+    id: 'housing1', name: 'Siedlungsbau', building: 'towncenter', age: 2,
+    cost: { food: 200, wood: 200, gold: 0 }, researchTicks: 30 * S, requiresBuildings: 0,
+    popCapAdd: 3, description: '+3 Bevölkerungslimit.',
+  },
+  housing2: {
+    id: 'housing2', name: 'Stadtrecht', building: 'towncenter', age: 3,
+    cost: { food: 300, wood: 300, gold: 0 }, researchTicks: 40 * S, requiresBuildings: 0,
+    popCapAdd: 3, description: 'Weitere +3 Bevölkerungslimit.',
   },
 };
 

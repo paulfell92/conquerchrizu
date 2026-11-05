@@ -20,7 +20,7 @@ import type {
 import { BUILDINGS, TECHS, UNITS } from '../content';
 import { createInitialState, mapOf, slotPos } from './init';
 import { stepState, squadDamage as squadDamageInternal } from './tick';
-import { hasRes, validate } from './commands';
+import { hasRes, hirePrice as hirePriceInternal, pointTowerOn, pointUpgradeCostFor, validate } from './commands';
 import { findBuilding, findSquad, getTownCenter, inPeace, peaceTicksOf } from './world';
 import { clock, clone, hash, visibility } from './queries';
 import { findPath as findPathInternal, walkable } from './pathfinding';
@@ -130,6 +130,51 @@ export function formatClock(tick: number): string {
 }
 
 // ---------------------------------------------------------------- additions (sim agent)
+
+/**
+ * Deterministic replay: createGame(config), then step with the logged commands
+ * (per tick: player 0 first, then player 1, submission order – same as
+ * LocalRelay). Runs until `untilTick` (state.tick === untilTick) or, if
+ * omitted, until the game is over. Returns the resulting state.
+ */
+export function replay(config: GameConfig, log: PlayerCommand[], untilTick?: number): GameState {
+  const state = createGame(config);
+  const cmds = log
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => a.c.tick - b.c.tick || a.c.player - b.c.player || a.i - b.i)
+    .map((x) => x.c);
+  let k = 0;
+  const limit = untilTick ?? Number.MAX_SAFE_INTEGER;
+  while (state.tick < limit && state.winner === null) {
+    while (k < cmds.length && cmds[k].tick < state.tick) k++;
+    let e = k;
+    while (e < cmds.length && cmds[e].tick === state.tick) e++;
+    step(state, k === e ? [] : cmds.slice(k, e));
+    k = e;
+  }
+  return state;
+}
+
+/** Gold price of hiring mercenaries of `kind` (cost sum × hireCostPct %, gold only). */
+export function hireCost(kind: UnitKind): Resources {
+  return hirePriceInternal(kind);
+}
+
+/** Ticks until `hire` is allowed again for a player (0 = ready). */
+export function hireCooldownLeft(state: GameState, player: PlayerId): number {
+  const left = (state.players[player].hireReadyTick ?? 0) - state.tick;
+  return left > 0 ? left : 0;
+}
+
+/** Cost of the next upgrade of an own point (level 1 -> 2 or 2 -> 3). */
+export function pointUpgradeCost(level: number): Resources {
+  return { ...pointUpgradeCostFor(level) };
+}
+
+/** The point tower standing on a capture point, or null. */
+export function pointTower(state: GameState, pointId: number): Building | null {
+  return pointTowerOn(state, pointId);
+}
 
 /** True while the peace phase ("Friedenszeit", config.peaceTicks) is running. */
 export function isPeace(state: GameState): boolean {

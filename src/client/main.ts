@@ -3,16 +3,19 @@
  * renderer, input, HUD and menus; owns the frame loop.
  */
 import type { Command, GameEvent, UnitKind } from '../sim/types';
-import { TILE } from '../sim/types';
-import { AGE_NAMES, BUILDINGS, TECHS, UNITS } from '../content';
+import { TICK_RATE, TILE } from '../sim/types';
+import { AGE_NAMES, BUILDINGS, RULES, TECHS, UNITS } from '../content';
 import type { Difficulty } from '../bot';
 import { CSS } from './hud/styles';
 import { Camera } from './camera';
-import { Renderer } from './render/renderer';
-import { Input, type InputHandler } from './input';
+import { Renderer, type Pick } from './render/renderer';
+import { DOUBLE_TAP_MS, Input, type InputHandler } from './input';
 import { Hud } from './hud/hud';
 import { Menus } from './hud/menus';
-import { HUMAN, Session } from './session';
+import { HUMAN, Session, type SessionOptions } from './session';
+import { Tutorial } from './hud/tutorial';
+import { prefs } from './prefs';
+import { iconFor } from './icons';
 
 // ---------------------------------------------------------------- DOM setup
 const style = document.createElement('style');
@@ -34,13 +37,13 @@ let lastFrame = performance.now();
 let mmTimer = 0;
 
 // ---------------------------------------------------------------- actions
-function issue(cmd: Command) {
+function issue(cmd: Command): boolean {
   const s = session;
-  if (!s || s.over) return;
+  if (!s || s.over) return false;
   const why = s.validate(cmd);
   if (why) {
     hud.toast(why, 'warn', 'alert');
-    return;
+    return false;
   }
   s.submit(cmd);
   if (cmd.t === 'build') {
@@ -48,6 +51,7 @@ function issue(cmd: Command) {
     s.clearSelection();
     pendingSelectSlot = cmd.slot;
   }
+  return true;
 }
 /** After placing a building, select it once it exists so its panel opens. */
 let pendingSelectSlot: number | null = null;
@@ -60,15 +64,29 @@ function moveSelected(x: number, y: number) {
   const s = session!;
   const ids = selectedOwn();
   if (!ids.length) return;
-  issue({ t: 'move', squads: ids, x, y });
-  s.spawnFx(3, x, y, 0, 0, performance.now(), 450, '#fff3c4', false);
+  if (!issue({ t: 'move', squads: ids, x, y })) return;
+  commandFeedback(ids, x, y, '#fff3c4');
 }
 function attackWithSelected(target: number, x: number, y: number) {
   const s = session!;
   const ids = selectedOwn();
   if (!ids.length) return;
-  issue({ t: 'attack', squads: ids, target });
-  s.spawnFx(3, x, y, 0, 0, performance.now(), 450, '#ff8a6e', false);
+  if (!issue({ t: 'attack', squads: ids, target })) return;
+  commandFeedback(ids, x, y, '#ff8a6e');
+  void s;
+}
+/** Destination marker + a short-lived line from each commanded squad, counts toward the hint. */
+function commandFeedback(ids: number[], x: number, y: number, color: string) {
+  const s = session!;
+  const now = performance.now();
+  s.spawnFx(3, x, y, 0, 0, now, 450, color, false);
+  for (const id of ids) {
+    const p = renderer.squadPos.get(id);
+    const q = s.squadById(id);
+    if (q) s.spawnFx(4, p && p.x > -1e8 ? p.x : q.x, p && p.x > -1e8 ? p.y : q.y, x, y, now, 700, color, false);
+  }
+  prefs.countCommand();
+  hud.commandHint = prefs.showCommandHint;
 }
 
 const hud = new Hud(app, {
@@ -129,21 +147,30 @@ const hud = new Hud(app, {
 });
 
 const menus = new Menus(app, {
-  start: (d) => startGame(d),
+  start: (d, peaceMin) => startGame(d, { peaceTicks: peaceMin * 60 * TICK_RATE }),
+  tutorial: () => startTutorial(),
   resume: () => setPaused(false),
   surrender: () => {
     if (!session) return;
     session.submit({ t: 'surrender' });
     setPaused(false);
   },
-  toMenu: () => {
+  toMenu: () => toMenu(),
+});
+
+function toMenu() {
+  {
+    cancelPendingTap();
+    tutorial?.destroy();
+    tutorial = null;
     menus.showEnd(null);
+    menus.showPause(false);
     hud.setVisible(false);
     menus.showMenu(true);
     // keep the old map as a backdrop but stop updates
     if (session) session.paused = true;
-  },
-});
+  }
+}
 
 function syncMode() {
   hud.setMode(session?.mode ?? 'none');
@@ -171,78 +198,148 @@ function setPaused(p: boolean) {
 }
 
 // ---------------------------------------------------------------- input
+/**
+ * Tap model: a single tap only selects / inspects. A double tap (or right
+ * click) commands the selected squads. While squads are selected, the single
+ * tap's selection change is deferred by the double-tap window so the first
+ * tap of a double tap never changes the selection.
+ */
+let pendingTap: { timer: number } | null = null;
+function cancelPendingTap() {
+  if (pendingTap) {
+    clearTimeout(pendingTap.timer);
+    pendingTap = null;
+  }
+}
+
+/** The selection change a single tap on `pk` makes (no command, ever). */
+function selectionFor(pk: Pick, shift: boolean): () => void {
+  const s = session!;
+  switch (pk.t) {
+    case 'squad':
+      if (pk.squad.owner === HUMAN) {
+        const id = pk.squad.id;
+        return shift ? () => s.toggleSquad(id) : () => s.selectSquads([id]);
+      }
+      return () => s.selectEnemy(pk.squad.id);
+    case 'building':
+      if (pk.building.owner === HUMAN) return () => s.selectBuilding(pk.building.id);
+      return () => s.selectEnemy(pk.building.id);
+    case 'slot':
+      return () => s.selectSlot(pk.slot);
+    case 'point':
+      return () => s.selectPoint(pk.point.id);
+    default:
+      return () => {}; // empty ground / fogged memory: nothing
+  }
+}
+
+/** Command for the selected squads at a picked target (double tap / right click). */
+function commandAt(pk: Pick, x: number, y: number) {
+  const s = session!;
+  if (!s.selected.size) return;
+  const wx = Math.round(cam.wx(x) * TILE);
+  const wy = Math.round(cam.wy(y) * TILE);
+  switch (pk.t) {
+    case 'squad':
+      if (pk.squad.owner !== HUMAN) attackWithSelected(pk.squad.id, pk.squad.x, pk.squad.y);
+      else moveSelected(wx, wy);
+      break;
+    case 'building': {
+      const b = pk.building;
+      if (b.owner !== HUMAN) {
+        attackWithSelected(b.id, b.x, b.y);
+        break;
+      }
+      // own building: move next to it, on the side facing the squads
+      let cx = 0;
+      let cy = 0;
+      let n = 0;
+      for (const id of s.selected) {
+        const q = s.squadById(id);
+        if (q) {
+          cx += q.x;
+          cy += q.y;
+          n++;
+        }
+      }
+      const dx = n ? cx / n - b.x : 1;
+      const dy = n ? cy / n - b.y : 0;
+      const l = Math.hypot(dx, dy) || 1;
+      const r = (b.kind === 'towncenter' ? RULES.townCenterRadius : RULES.buildingRadius) + RULES.squadRadius + 700;
+      moveSelected(Math.round(b.x + (dx / l) * r), Math.round(b.y + (dy / l) * r));
+      break;
+    }
+    case 'remembered':
+      attackWithSelected(pk.rem.id, pk.rem.x, pk.rem.y);
+      break;
+    case 'point':
+      moveSelected(pk.point.x, pk.point.y);
+      break;
+    default:
+      moveSelected(wx, wy);
+  }
+}
+
 const handler: InputHandler = {
   tap(x, y, o) {
     const s = session;
     if (!s || s.over || s.paused) return;
-    const pk = renderer.pick(x, y, o.touch);
-    // pending modes
+    const now = performance.now();
+    const wx = Math.round(cam.wx(x) * TILE);
+    const wy = Math.round(cam.wy(y) * TILE);
+    s.spawnFx(5, wx, wy, 0, 0, now, o.double ? 420 : 320, o.double ? '#ffe08a' : '#fff6da', o.double);
+    // explicit modes from panel buttons act on a single tap
     if (s.mode === 'rally' && s.selBuilding !== null) {
-      const wx = Math.round(cam.wx(x) * TILE);
-      const wy = Math.round(cam.wy(y) * TILE);
+      cancelPendingTap();
       issue({ t: 'rally', building: s.selBuilding, x: wx, y: wy });
-      s.spawnFx(3, wx, wy, 0, 0, performance.now(), 450, '#fff3c4', false);
+      s.spawnFx(3, wx, wy, 0, 0, now, 450, '#fff3c4', false);
       s.mode = 'none';
       syncMode();
       return;
     }
-    const hasArmy = s.selected.size > 0;
-    switch (pk.t) {
-      case 'squad': {
-        const q = pk.squad;
-        if (q.owner === HUMAN) {
-          if (o.double) {
-            s.selectSquads(s.myArmy().filter((m) => m.kind === q.kind).map((m) => m.id));
-          } else if (o.shift) s.toggleSquad(q.id);
-          else if (s.mode === 'attack') {
-            /* ignore own in attack mode */
-          } else s.selectSquads([q.id]);
-        } else if (hasArmy) attackWithSelected(q.id, q.x, q.y);
-        else s.selectEnemy(q.id);
-        break;
-      }
-      case 'building': {
-        const b = pk.building;
-        if (b.owner === HUMAN) {
-          if (hasArmy && s.mode !== 'attack') {
-            // tapping own base with an army selected: move there
-            moveSelected(Math.round(cam.wx(x) * TILE), Math.round(cam.wy(y) * TILE));
-          } else s.selectBuilding(b.id);
-        } else if (hasArmy) attackWithSelected(b.id, b.x, b.y);
-        else s.selectEnemy(b.id);
-        break;
-      }
-      case 'remembered':
-        if (hasArmy) attackWithSelected(pk.rem.id, pk.rem.x, pk.rem.y);
-        break;
-      case 'slot':
-        if (hasArmy) moveSelected(Math.round(cam.wx(x) * TILE), Math.round(cam.wy(y) * TILE));
-        else s.selectSlot(pk.slot);
-        break;
-      case 'point':
-        if (hasArmy) moveSelected(pk.point.x, pk.point.y);
-        else s.selectPoint(pk.point.id);
-        break;
-      case 'ground':
-        if (hasArmy && s.mode !== 'attack') moveSelected(pk.x, pk.y);
-        else if (s.mode === 'attack') {
-          s.mode = 'none';
-        } else s.clearSelection();
-        break;
+    const pk = renderer.pick(x, y, o.touch);
+    if (s.mode === 'attack') {
+      cancelPendingTap();
+      if (pk.t === 'squad' && pk.squad.owner !== HUMAN) attackWithSelected(pk.squad.id, pk.squad.x, pk.squad.y);
+      else if (pk.t === 'building' && pk.building.owner !== HUMAN) attackWithSelected(pk.building.id, pk.building.x, pk.building.y);
+      else if (pk.t === 'remembered') attackWithSelected(pk.rem.id, pk.rem.x, pk.rem.y);
+      s.mode = 'none';
+      syncMode();
+      return;
     }
-    if (s.mode === 'attack' && pk.t !== 'squad') s.mode = 'none';
-    if (s.mode === 'attack' && pk.t === 'squad' && pk.squad.owner !== HUMAN) s.mode = 'none';
-    syncMode();
+    if (o.double) {
+      cancelPendingTap();
+      if (pk.t === 'squad' && pk.squad.owner === HUMAN) {
+        const kind = pk.squad.kind;
+        s.selectSquads(s.myArmy().filter((m) => m.kind === kind).map((m) => m.id));
+      } else if (s.selected.size) commandAt(pk, x, y);
+      else selectionFor(pk, false)();
+      syncMode();
+      return;
+    }
+    const apply = selectionFor(pk, o.shift);
+    cancelPendingTap();
+    if (s.selected.size && !o.shift) {
+      pendingTap = {
+        timer: window.setTimeout(() => {
+          pendingTap = null;
+          if (session === s && !s.over) {
+            apply();
+            syncMode();
+          }
+        }, DOUBLE_TAP_MS + 30),
+      };
+    } else {
+      apply();
+      syncMode();
+    }
   },
   command(x, y) {
     const s = session;
     if (!s || s.over || s.paused || !s.selected.size) return;
-    const pk = renderer.pick(x, y, false);
-    if (pk.t === 'squad' && pk.squad.owner !== HUMAN) attackWithSelected(pk.squad.id, pk.squad.x, pk.squad.y);
-    else if (pk.t === 'building' && pk.building.owner !== HUMAN) attackWithSelected(pk.building.id, pk.building.x, pk.building.y);
-    else if (pk.t === 'remembered') attackWithSelected(pk.rem.id, pk.rem.x, pk.rem.y);
-    else if (pk.t === 'point') moveSelected(pk.point.x, pk.point.y);
-    else moveSelected(Math.round(cam.wx(x) * TILE), Math.round(cam.wy(y) * TILE));
+    cancelPendingTap();
+    commandAt(renderer.pick(x, y, false), x, y);
   },
   boxSelect(x0, y0, x1, y1, shift) {
     const s = session;
@@ -321,7 +418,7 @@ function onEvent(ev: GameEvent, s: Session) {
     case 'built':
       if (ev.owner === HUMAN) {
         const b = s.buildingById(ev.building);
-        if (b) hud.toast(`${BUILDINGS[b.kind].name} fertig`, 'good', b.kind);
+        if (b) hud.toast(`${BUILDINGS[b.kind]?.name ?? 'Gebäude'} fertig`, 'good', iconFor(b.kind));
       }
       break;
     case 'researched':
@@ -336,6 +433,9 @@ function onEvent(ev: GameEvent, s: Session) {
         void UNITS;
       }
       break;
+    case 'peaceOver':
+      hud.toast('Friedenszeit vorbei – jetzt wird gekämpft', 'warn', 'barracks');
+      break;
     case 'gameOver':
       window.setTimeout(() => {
         hud.setVisible(false);
@@ -346,13 +446,17 @@ function onEvent(ev: GameEvent, s: Session) {
 }
 
 // ---------------------------------------------------------------- lifecycle
-function startGame(d: Difficulty) {
+function startGame(d: Difficulty, opts: SessionOptions = {}) {
+  cancelPendingTap();
+  tutorial?.destroy();
+  tutorial = null;
   const seed = params.has('seed') ? Number(params.get('seed')) : (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
-  session = new Session(d, seed);
+  session = new Session(d, seed, opts);
   session.on(onEvent);
   cam.setMap(session.state.mapW, session.state.mapH);
   renderer.setSession(session);
   hud.bind(session);
+  hud.commandHint = prefs.showCommandHint;
   hud.setVisible(true);
   hud.setBoxMode(false);
   menus.showMenu(false);
@@ -361,7 +465,20 @@ function startGame(d: Difficulty) {
   layout();
   cam.zoom = Math.max(cam.minZoom, Math.min(cam.maxZoom, 48, cam.viewW / 26, cam.viewH / 12));
   jumpHome();
-  if (DEBUG) (window as unknown as { __game: unknown }).__game = { session, cam, renderer, hud, menus };
+  if (DEBUG) (window as unknown as { __game: unknown }).__game = { session, cam, renderer, hud, menus, get tutorial() { return tutorial; } };
+}
+
+let tutorial: Tutorial | null = null;
+function startTutorial() {
+  prefs.tutorialSeen = true;
+  startGame('easy', { peaceTicks: 10 * 60 * TICK_RATE, passiveBot: true, tutorial: true });
+  tutorial = new Tutorial(app, session!, cam, {
+    finish: (goMenu) => {
+      tutorial = null;
+      if (goMenu) toMenu();
+    },
+    focus: (x, y) => cam.centerOn(x, y),
+  });
 }
 
 /** Backdrop for the menu: a fresh state without a bot, not ticking. */
@@ -417,6 +534,7 @@ function frame(now: number) {
   renderer.render(now);
   if (hud.root.style.display !== 'none') {
     hud.update();
+    tutorial?.update(now);
     mmTimer -= dt;
     if (mmTimer <= 0) {
       mmTimer = 100;

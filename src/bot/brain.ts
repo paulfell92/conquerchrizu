@@ -12,6 +12,7 @@ import { DIFFICULTIES, PERSONALITIES } from './personalities';
 import type { DifficultyDef, PersonalityDef } from './personalities';
 import { BotRng } from './rng';
 import { Memory } from './view';
+import { emptySinkUse } from './sinks';
 import type { View } from './view';
 
 export type Role = 'army' | 'scout' | 'retreat';
@@ -65,6 +66,10 @@ export class Brain {
   readonly stats: BotStats = { commands: 0, validationFailures: 0, rejectedBySim: 0, budgetDenied: 0 };
   /** Set once the bot has gone on the offensive (attack/push stance). */
   firstAttackDone = false;
+  rallyAllDone = false;
+  /** Ticks of own squad deaths (for "hire after losses"). */
+  readonly lossTicks: number[] = [];
+  readonly sinkUse = emptySinkUse();
 
   constructor(
     readonly me: PlayerId,
@@ -73,6 +78,10 @@ export class Brain {
     seed: number,
     /** Tutorial mode: stays on its own half, never attacks. */
     readonly passive = false,
+    /** Campaign: 0.5 = cautious, 1 = default, 1.5 = reckless. */
+    readonly aggression = 1,
+    /** Campaign: never research beyond this age. */
+    readonly maxAge: 1 | 2 | 3 = 3,
   ) {
     this.rng = new BotRng(seed * 31 + me * 7919 + 17);
     this.diff = DIFFICULTIES[difficulty];
@@ -95,7 +104,14 @@ export function inPeace(v: View): boolean {
 /** May the bot take offensive actions (attack enemy squads/buildings/points, raid)? */
 export function aggressionOk(b: Brain, v: View): boolean {
   if (b.passive) return false;
-  return v.tick >= peaceTicks(v) + b.diff.postPeaceDelay;
+  // aggression scales the post-peace delay (reckless bots start sooner)
+  const delay = Math.trunc(b.diff.postPeaceDelay / Math.max(0.25, b.aggression)) + (b.aggression < 1 ? Math.trunc((1 - b.aggression) * 60 * 20) : 0);
+  return v.tick >= peaceTicks(v) + delay;
+}
+
+/** Multiplier on attack thresholds from BotOptions.aggression (>1 = more cautious). */
+export function aggressionCaution(b: Brain): number {
+  return 1 / Math.max(0.25, b.aggression);
 }
 
 /** Position is on the bot's own half of the map (closer to own TC than to the enemy's). */

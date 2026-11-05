@@ -27,9 +27,10 @@ export type BuildingKind =
   | 'stable'
   | 'blacksmith'
   | 'workshop'
-  | 'tower';
+  | 'tower'
+  | 'pointtower'; // placed on an own capture point via `fortifyPoint` (slot -2)
 export type PointKind = 'village' | 'forest' | 'mine';
-export type TechId = 'age2' | 'age3' | 'attack1' | 'armor1' | 'attack2';
+export type TechId = 'age2' | 'age3' | 'attack1' | 'armor1' | 'attack2' | 'housing1' | 'housing2' | 'armor2';
 export type Age = 1 | 2 | 3;
 
 export interface Resources {
@@ -55,7 +56,11 @@ export type Command =
   | { t: 'research'; building: number; tech: TechId }
   | { t: 'cancel'; building: number } // remove LAST queue item, refund 100 %
   | { t: 'rally'; building: number; x: number; y: number }
-  | { t: 'upgradePoint'; point: number } // own capture point level 1 -> 2
+  | { t: 'rallyAll'; x: number; y: number } // rally of ALL own training buildings + PlayerState.defaultRally
+  | { t: 'upgradePoint'; point: number } // own capture point level 1 -> 2 -> 3 (level 3 needs age 2)
+  | { t: 'fortifyPoint'; point: number } // build a 'pointtower' on an own capture point
+  | { t: 'hire'; unit: UnitKind } // mercenaries: instant squad at the own TC, paid in gold, cooldown
+  | { t: 'objective'; won: boolean } // scenario games only: ends the game (winner = issuer if won)
   | { t: 'surrender' };
 
 export interface PlayerCommand {
@@ -102,7 +107,9 @@ export interface Building {
   id: number;
   owner: PlayerId;
   kind: BuildingKind;
-  slot: number; // -1 for town center
+  slot: number; // -1 for town center, -2 for a point tower
+  /** Capture point id a 'pointtower' stands on (absent for all other buildings). */
+  point?: number;
   x: number;
   y: number;
   hp: number;
@@ -124,8 +131,11 @@ export interface CapturePoint {
   /** Capture progress 0..CAPTURE_MAX for `capturer`. Owner changes when it hits max. */
   progress: number;
   capturer: Owner;
-  level: 1 | 2;
+  level: PointLevel;
 }
+
+/** Point upgrade level: 1 = 100 %, 2 = 150 %, 3 = 200 % income. */
+export type PointLevel = 1 | 2 | 3;
 
 export interface PlayerStats {
   squadsTrained: number;
@@ -148,6 +158,13 @@ export interface PlayerState {
   popCap: number;
   surrendered: boolean;
   stats: PlayerStats;
+  /**
+   * Set by `rallyAll`: training buildings completed later inherit it as their
+   * rally. Always present in sim-created states (optional for hand-built ones).
+   */
+  defaultRally?: Vec | null;
+  /** First tick at which `hire` is allowed again (0 = ready). */
+  hireReadyTick?: number;
 }
 
 export type GameEvent =
@@ -163,7 +180,7 @@ export type GameEvent =
   | { t: 'gameOver'; winner: Owner; reason: WinReason }
   | { t: 'peaceOver' }; // emitted once on the tick the peace phase ends
 
-export type WinReason = 'towncenter' | 'vp' | 'timeout' | 'surrender';
+export type WinReason = 'towncenter' | 'vp' | 'timeout' | 'surrender' | 'objective';
 
 export interface GameConfig {
   seed: number;
@@ -181,6 +198,38 @@ export interface GameConfig {
    * The hard cap and VP drain doubling are measured from the END of peace.
    */
   peaceTicks?: number;
+  /** Campaign/mission setup applied by createGame. Objectives live in the client. */
+  scenario?: Scenario;
+}
+
+// ---------------------------------------------------------------- scenarios
+
+export interface ScenarioPlayer {
+  startRes?: Resources; // replaces RULES.startRes
+  age?: Age; // start age (the age techs count as researched)
+  vpStart?: number; // replaces RULES.vpStart
+  popCap?: number; // replaces RULES.popCap (housing techs add on top)
+  techs?: TechId[]; // pre-researched non-age techs
+}
+
+export interface Scenario {
+  /** Index = PlayerId. Missing entries/fields keep the defaults. */
+  players?: (ScenarioPlayer | null)[];
+  /** Positions in TILES (converted to the tile center, nearest walkable). */
+  extraSquads?: { owner: PlayerId; kind: UnitKind; x: number; y: number; hpPct?: number }[];
+  /**
+   * Extra buildings on base slots 0..7 (`built` = complete, else just started).
+   * kind 'pointtower' instead needs `point` = capture point NAME (slot ignored).
+   */
+  extraBuildings?: { owner: PlayerId; kind: BuildingKind; slot: number; built: boolean; point?: string }[];
+  /** Point owners by point name (fully captured), optional level. */
+  pointOwners?: { name: string; owner: Owner; level?: PointLevel }[];
+  /** Players whose map start squads are removed. */
+  removeStartSquads?: PlayerId[];
+  /** false = no VP drain and no VP loss; only TC / surrender / objective / timeout end the game. Default true. */
+  vpEnabled?: boolean;
+  /** Replaces RULES.hardCapTicks (still measured from the end of peace). */
+  hardCapTicks?: number;
 }
 
 export interface GameState {

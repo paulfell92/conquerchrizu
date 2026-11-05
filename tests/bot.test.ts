@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { cloneState, computeVisibility, createGame, isWalkable, validateCommand } from '../src/sim';
 import type { Command, GameState, PlayerId, Squad } from '../src/sim';
 import { LocalRelay } from '../src/net/localRelay';
-import { Bot, difficultyIncomePct, personalityFromSeed } from '../src/bot';
+import { Bot, difficultyIncomePct, PERSONALITY_INFO, PERSONALITY_LIST, personalityFromSeed } from '../src/bot';
 import type { Difficulty, Personality } from '../src/bot';
 import { BotRng } from '../src/bot/rng';
 import { counterFactor } from '../src/bot/view';
@@ -232,5 +232,22 @@ describe.skipIf(!READY)('bot peace phase and tutorial mode', () => {
     const mid = (state.mapW * 1000) / 2;
     // player 1 lives on the right half; allow a small formation overshoot
     expect(minX1).toBeGreaterThan(mid - 2500);
+  }, 60_000);
+});
+
+describe.skipIf(!READY)('bot campaign options', () => {
+  it('maxAge stops age-ups and PERSONALITY_INFO covers all personalities', () => {
+    for (const p of PERSONALITY_LIST) expect(PERSONALITY_INFO[p].label.length).toBeGreaterThan(0);
+    const state = createGame(cfg(31));
+    const relay = new LocalRelay(state, 1_000_000);
+    const bots = [0, 1].map((p) => new Bot({ player: p as PlayerId, difficulty: 'hard', seed: 50 + p, personality: 'boomer', maxAge: p === 0 ? 1 : 3 }));
+    while (state.winner === null && state.tick < 20 * 60 * 6) {
+      for (const p of [0, 1] as PlayerId[]) for (const c of bots[p].update(state)) {
+        if (p === 0 && c.t === 'research') expect(['age2', 'age3']).not.toContain(c.tech);
+        relay.submit(p, c);
+      }
+      relay.advance();
+    }
+    expect(state.players[0].age).toBe(1);
   }, 60_000);
 });

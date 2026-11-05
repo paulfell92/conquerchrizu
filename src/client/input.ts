@@ -7,8 +7,13 @@
  */
 import type { Camera } from './camera';
 
+/** Max gap between the two taps of a double tap. main.ts defers single taps slightly longer. */
+export const DOUBLE_TAP_MS = 270;
+
 export interface InputHandler {
   tap(x: number, y: number, opts: { touch: boolean; shift: boolean; double: boolean }): void;
+  /** Fired on every pointerdown (for instant feedback). */
+  press?(x: number, y: number, touch: boolean): void;
   command(x: number, y: number): void; // right click
   boxSelect(x0: number, y0: number, x1: number, y1: number, shift: boolean): void;
   boxPreview(b: { x0: number; y0: number; x1: number; y1: number } | null): void;
@@ -72,6 +77,7 @@ export class Input {
     }
     const p = this.local(e);
     this.ptrs.set(e.pointerId, { id: e.pointerId, x: p.x, y: p.y, sx: p.x, sy: p.y, t0: performance.now(), type: e.pointerType, button: e.button });
+    this.h.press?.(p.x, p.y, e.pointerType !== 'mouse');
     if (this.ptrs.size === 2) {
       // second finger: switch to pinch, cancel any box
       if (this.mode === 'box') this.h.boxPreview(null);
@@ -151,7 +157,7 @@ export class Input {
         if (ptr.type === 'mouse' && ptr.button === 2) this.h.command(p.x, p.y);
         else if (ptr.type !== 'mouse' || ptr.button === 0) {
           const now = performance.now();
-          const dbl = now - this.lastTapT < 320 && Math.hypot(p.x - this.lastTapX, p.y - this.lastTapY) < 24;
+          const dbl = now - this.lastTapT < DOUBLE_TAP_MS && Math.hypot(p.x - this.lastTapX, p.y - this.lastTapY) < (ptr.type === 'mouse' ? 12 : 34);
           this.lastTapT = dbl ? 0 : now;
           this.lastTapX = p.x;
           this.lastTapY = p.y;

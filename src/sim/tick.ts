@@ -24,7 +24,7 @@ import {
   techArmorPct,
   techDmgPct,
 } from './world';
-import { applyCommand, endGame, orderMove, setIdle } from './commands';
+import { applyCommand, endGame, orderMove, pointTowerOn, setIdle, spawnNear, trainsUnits } from './commands';
 import { newSquad } from './init';
 
 const REPATH_TICKS = 10;
@@ -71,34 +71,26 @@ export function stepState(state: GameState, commands: PlayerCommand[]): void {
   // 6. victory
   victory(state);
   state.tick++;
-  if (state.winner === null && state.tick >= RULES.hardCapTicks + peace) {
+  if (state.winner === null && state.tick >= hardCapOf(state) + peace) {
     const a = state.players[0].vp;
     const b = state.players[1].vp;
-    endGame(state, a > b ? 0 : b > a ? 1 : -1, 'timeout');
+    const v = vpEnabled(state);
+    endGame(state, v && a > b ? 0 : v && b > a ? 1 : -1, 'timeout');
   }
+}
+
+// ---------------------------------------------------------------- scenario switches
+
+export function vpEnabled(state: GameState): boolean {
+  return state.config.scenario?.vpEnabled !== false;
+}
+
+export function hardCapOf(state: GameState): number {
+  const h = state.config.scenario?.hardCapTicks;
+  return typeof h === 'number' && h > 0 ? Math.trunc(h) : RULES.hardCapTicks;
 }
 
 // ---------------------------------------------------------------- production
-
-function spawnPos(state: GameState, b: Building): Vec {
-  const r = bodyRadius(b) + RULES.squadRadius + 300;
-  let dx: number;
-  let dy: number;
-  if (b.rally) {
-    dx = b.rally.x - b.x;
-    dy = b.rally.y - b.y;
-  } else if (b.kind === 'towncenter') {
-    dx = b.owner === 0 ? 1 : -1;
-    dy = 0;
-  } else {
-    const tc = getTownCenter(state, b.owner);
-    dx = tc ? b.x - tc.x : b.owner === 0 ? 1 : -1;
-    dy = tc ? b.y - tc.y : 0;
-  }
-  const d = isqrt(dx * dx + dy * dy);
-  if (d === 0) return nearestWalkable(state, b.x + (b.owner === 0 ? r : -r), b.y);
-  return nearestWalkable(state, b.x + Math.trunc((dx * r) / d), b.y + Math.trunc((dy * r) / d));
-}
 
 function production(state: GameState): void {
   for (const b of state.buildings) {
@@ -110,7 +102,11 @@ function production(state: GameState): void {
       const hpAfter = start + Math.trunc(((def.hp - start) * (doneBefore + 1)) / def.buildTicks);
       b.hp = Math.min(b.maxHp, b.hp + (hpAfter - hpBefore));
       b.buildTicksLeft--;
-      if (b.buildTicksLeft === 0) emit(state, { t: 'built', building: b.id, owner: b.owner });
+      if (b.buildTicksLeft === 0) {
+        const dr = state.players[b.owner].defaultRally;
+        if (dr && !b.rally && trainsUnits(b)) b.rally = { x: dr.x, y: dr.y };
+        emit(state, { t: 'built', building: b.id, owner: b.owner });
+      }
       continue;
     }
     if (b.queue.length === 0) continue;
@@ -121,14 +117,17 @@ function production(state: GameState): void {
     const p = state.players[b.owner];
     if (q.item in UNITS) {
       const kind = q.item as UnitKind;
-      const pos = spawnPos(state, b);
+      const pos = spawnNear(state, b, b.rally);
       const s = newSquad(state, b.owner, kind, pos.x, pos.y);
       p.stats.squadsTrained++;
       emit(state, { t: 'trained', squad: s.id, owner: b.owner });
       if (b.rally) orderMove(state, s, b.rally, 'move');
     } else {
       const tech = q.item as TechId;
-      if (!p.techs.includes(tech)) p.techs.push(tech);
+      if (!p.techs.includes(tech)) {
+        p.techs.push(tech);
+        p.popCap += TECHS[tech].popCapAdd ?? 0;
+      }
       emit(state, { t: 'researched', owner: b.owner, tech });
       if (tech === 'age2' || tech === 'age3') {
         const age = tech === 'age2' ? 2 : 3;
@@ -526,13 +525,16 @@ function combat(state: GameState): void {
     killer.stats.squadsKilled++;
     p.stats.squadsLost++;
     p.pop -= def.pop;
-    p.vp -= RULES.vpLossPerSquadDeath;
+    if (vpEnabled(state)) p.vp -= RULES.vpLossPerSquadDeath;
     s.members = 0;
     emit(state, { t: 'death', id: s.id, owner: s.owner, kind: s.kind, x: s.x, y: s.y });
   }
   if (anyDead) state.squads = state.squads.filter((s) => s.hp > 0);
 
-  // deaths (buildings)
+  removeDeadBuildings(state);
+}
+
+function removeDeadBuildings(state: GameState): void {
   let anyB = false;
   for (const b of state.buildings) {
     if (b.hp > 0) continue;
@@ -606,6 +608,8 @@ function capture(state: GameState): void {
     }
     if (pt.owner !== -1) {
       if (inPeace(state)) continue; // enemy points are safe during peace
+      const tower = pointTowerOn(state, pt.id);
+      if (tower && tower.buildTicksLeft === 0) continue; // fortified: destroy the tower first
       // neutralise the enemy point
       pt.capturer = who;
       pt.progress -= rate;
@@ -614,6 +618,11 @@ function capture(state: GameState): void {
         pt.owner = -1;
         pt.level = 1;
         emit(state, { t: 'captured', point: pt.id, owner: -1, prevOwner });
+        // an unfinished tower on a lost point is destroyed
+        if (tower) {
+          tower.hp = 0;
+          removeDeadBuildings(state);
+        }
       }
       continue;
     }
@@ -652,7 +661,7 @@ function income(state: GameState): void {
     for (const pt of state.points) {
       if (pt.owner !== p.id) continue;
       const inc = RULES.pointIncome[pt.kind];
-      const pct = pt.level === 2 ? RULES.pointLevel2IncomePct : 100;
+      const pct = pt.level === 3 ? RULES.pointLevel3IncomePct : pt.level === 2 ? RULES.pointLevel2IncomePct : 100;
       f += Math.trunc((inc.food * pct) / 100);
       w += Math.trunc((inc.wood * pct) / 100);
       g += Math.trunc((inc.gold * pct) / 100);
@@ -700,7 +709,7 @@ function victoryPoints(state: GameState): void {
     if (p.owner === 0) n0++;
     else if (p.owner === 1) n1++;
   }
-  if (n0 === n1 || inPeace(state)) return;
+  if (n0 === n1 || inPeace(state) || !vpEnabled(state)) return;
   const diff = n0 > n1 ? n0 - n1 : n1 - n0;
   let drain = diff * RULES.vpDrainPerPoint;
   if (state.tick >= RULES.vpDrainDoubleAfterTicks + peaceTicksOf(state)) drain *= 2;
@@ -718,7 +727,7 @@ function victory(state: GameState): void {
   }
   const v0 = state.players[0].vp;
   const v1 = state.players[1].vp;
-  if (v0 <= 0 || v1 <= 0) {
+  if (vpEnabled(state) && (v0 <= 0 || v1 <= 0)) {
     endGame(state, v0 <= 0 && v1 <= 0 ? (v0 > v1 ? 0 : v1 > v0 ? 1 : -1) : v0 <= 0 ? 1 : 0, 'vp');
   }
 }

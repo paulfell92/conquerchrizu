@@ -6,7 +6,7 @@
  */
 import { RULES, UNITS } from '../content';
 import type { CapturePoint, Squad, Vec } from '../sim';
-import { aggressionOk, emit, onMyHalf } from './brain';
+import { aggressionCaution, aggressionOk, emit, onMyHalf } from './brain';
 import type { Ctx, Group, Objective } from './brain';
 import { pointIncomeValue } from './strategy';
 import { centroid, dangerAt, dist, matchupPower, squadPower, TPS } from './view';
@@ -118,7 +118,7 @@ function objectives(ctx: Ctx, groupPower: number, at: Vec, raider: boolean, take
   const { b, v } = ctx;
   const out: Objective[] = [];
   const stance = b.stance;
-  const caution = b.diff.attackCaution;
+  const caution = b.diff.attackCaution * aggressionCaution(b);
   const aggressive = aggressionOk(b, v);
 
   const threats = baseThreats(v);

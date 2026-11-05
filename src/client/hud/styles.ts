@@ -164,11 +164,42 @@ body.ctx-open #cards{right:calc(var(--sar) + 8px + var(--cw) + 8px)}
 @keyframes tin{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.toast{animation:none}}
 
+/* ---------------------------------------------------------------- peace + command hint */
+#peace{position:absolute;left:50%;transform:translateX(-50%);top:calc(var(--sat) + 6px + var(--tb) + 5px);
+  display:flex;align-items:center;gap:6px;padding:4px 10px 4px 8px;border-radius:999px;font-size:12px;font-weight:700;
+  color:#cfe6c4;border-color:rgba(127,211,107,.55);font-variant-numeric:tabular-nums;pointer-events:none}
+#peace .ic{width:15px;height:15px;color:var(--good)}
+body.has-peace #toasts{top:calc(var(--sat) + 6px + var(--tb) + 38px)}
+#cmdhint{position:absolute;left:calc(var(--sal) + 8px + var(--mmw) + 8px);bottom:calc(var(--sab) + 6px + 62px + 6px);
+  display:flex;align-items:center;gap:6px;padding:5px 10px 5px 8px;border-radius:999px;font-size:12px;font-weight:700;
+  background:rgba(217,178,90,.92);color:#2a1d0c;pointer-events:none;box-shadow:0 2px 0 rgba(0,0,0,.35)}
+#cmdhint .ic{width:15px;height:15px}
 /* ---------------------------------------------------------------- mode hint */
 #modehint{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--sab) + 76px);padding:8px 8px 8px 12px;border-radius:10px;
   display:flex;align-items:center;gap:10px;font-size:13px;font-weight:650}
 #modehint button{min-height:34px;padding:0 10px;border-radius:7px;border:1px solid var(--brass-dim);font-size:12px}
 
+/* ---------------------------------------------------------------- tutorial */
+#tut{position:absolute;left:calc(var(--sal) + 8px);right:calc(var(--sar) + 8px);margin:0 auto;top:calc(var(--sat) + 6px + var(--tb) + 6px);
+  max-width:520px;display:flex;align-items:flex-start;gap:10px;padding:8px 8px 8px 10px;
+  border-color:var(--brass);z-index:5}
+body.ctx-open #tut{right:calc(var(--sar) + 8px + var(--cw) + 8px);margin:0}
+#tut .tstep{flex:none;min-width:34px;height:24px;border-radius:999px;background:var(--brass);color:#2a1d0c;font-size:12px;font-weight:800;
+  display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;margin-top:1px}
+#tut .tbody{flex:1;min-width:0}
+#tut h3{margin:0;font-family:var(--serif);font-size:15px;line-height:1.2}
+#tut p{margin:2px 0 0;font-size:12px;line-height:1.35;color:var(--parch-dim)}
+#tut .tbtns{display:flex;flex-direction:column;gap:5px;flex:none}
+#tut .btn.small{min-height:36px;padding:0 10px;font-size:12px}
+#tutring.box{border-radius:12px}
+#tutring{position:absolute;left:0;top:0;display:none;border-radius:50%;
+  transform-origin:center;pointer-events:none;z-index:4;
+  border:3px solid #ffe08a;box-shadow:0 0 0 3px rgba(42,29,12,.55),0 0 18px rgba(255,224,138,.6);animation:tpulse 1.1s ease-in-out infinite}
+@keyframes tpulse{0%,100%{opacity:1;scale:1}50%{opacity:.55;scale:1.12}}
+@media (prefers-reduced-motion:reduce){#tutring{animation:none}}
+body:has(#tut) #toasts{top:calc(var(--sat) + 6px + var(--tb) + 86px)}
+body:has(#tut) #peace{display:none}
+body:has(#tut) #cmdhint{display:none}
 /* ---------------------------------------------------------------- overlays */
 .overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:auto;
   padding:calc(var(--sat) + 12px) calc(var(--sar) + 16px) calc(var(--sab) + 12px) calc(var(--sal) + 16px)}
@@ -194,6 +225,13 @@ body.ctx-open #cards{right:calc(var(--sar) + 8px + var(--cw) + 8px)}
 .seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;background:rgba(0,0,0,.35);border-radius:10px}
 .seg button{min-height:44px;border-radius:7px;font-weight:700;font-size:14px;color:var(--parch-dim)}
 .seg button.on{background:var(--ink-3);color:var(--parch);box-shadow:inset 0 0 0 1px var(--brass)}
+.menu .opt{display:flex;flex-direction:column;gap:6px}
+.menu .opt h2{font-size:14px;color:var(--parch-dim)}
+.seg4{grid-template-columns:repeat(4,1fr)}
+.row2{display:grid;grid-template-columns:1fr auto;gap:8px}
+.first{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 6px 6px 12px;border-radius:10px;
+  background:rgba(217,178,90,.16);border:1px solid var(--brass-dim);font-family:var(--serif);font-size:15px;font-weight:700}
+.btn.small{min-height:44px;padding:0 12px;font-size:13px}
 .howto{margin:0;padding:0 0 0 18px;font-size:12.5px;line-height:1.42;color:var(--parch-dim)}
 .howto li{margin:0 0 3px}
 .howto b{color:var(--parch)}
@@ -203,8 +241,12 @@ body.ctx-open #cards{right:calc(var(--sar) + 8px + var(--cw) + 8px)}
   .title h1{font-size:clamp(36px,6.4vw,58px)}
   .title .lede{font-size:13.5px}
   .shield{width:44px;height:52px}
-  .menu .box{padding:12px;gap:9px}
-  .howto{font-size:11.5px}
+  .menu .box{padding:10px 12px;gap:7px;max-height:calc(100vh - 24px);overflow-y:auto}
+  .menu .opt{gap:4px}
+  .seg button{min-height:40px}
+  .howto{font-size:11px;line-height:1.35}
+  .howto li{margin:0 0 1px}
+  .menu .foot{display:none}
 }
 @media (max-width:640px) and (orientation:portrait){
   .menu{grid-template-columns:1fr}
