@@ -160,14 +160,27 @@ export type GameEvent =
   | { t: 'ageUp'; owner: PlayerId; age: Age }
   | { t: 'rejected'; owner: PlayerId; reason: string } // invalid/unaffordable command
   | { t: 'underAttack'; owner: PlayerId; x: number; y: number }
-  | { t: 'gameOver'; winner: Owner; reason: WinReason };
+  | { t: 'gameOver'; winner: Owner; reason: WinReason }
+  | { t: 'peaceOver' }; // emitted once on the tick the peace phase ends
 
 export type WinReason = 'towncenter' | 'vp' | 'timeout' | 'surrender';
 
 export interface GameConfig {
   seed: number;
   mapId: string;
-  players: { name: string; color: string; isBot: boolean }[]; // exactly 2
+  /**
+   * incomePct: handicap on ALL income (TC, points, bounty), default 100.
+   * Used for difficulty (e.g. easy bot 80). Integer percent, truncate per payout.
+   */
+  players: { name: string; color: string; isBot: boolean; incomePct?: number }[]; // exactly 2
+  /**
+   * Peace phase ("Friedenszeit") at the start, in ticks. Default 0.
+   * While state.tick < peaceTicks: no damage between players (squads, towers, TC),
+   * attack commands on enemy entities are rejected ("Friedenszeit"), points owned
+   * by the enemy cannot be neutralised (neutral points can be captured), no VP drain.
+   * The hard cap and VP drain doubling are measured from the END of peace.
+   */
+  peaceTicks?: number;
 }
 
 export interface GameState {
