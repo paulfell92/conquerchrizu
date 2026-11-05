@@ -5,7 +5,7 @@
 import { BUILDINGS, RESOURCE_NAMES, RULES, TECHS, UNITS, AGE_NAMES } from '../content';
 import type { Age, Building, Command, GameState, PlayerId, Resources, Squad, Vec } from './types';
 import { TILE } from './types';
-import { findBuilding, findSquad, completedNonTcBuildings, buildingCount, getTownCenter, enemyOf, reject, emit } from './world';
+import { inPeace, findBuilding, findSquad, completedNonTcBuildings, buildingCount, getTownCenter, enemyOf, reject, emit } from './world';
 import { mapOf, newBuilding, slotPos } from './init';
 import { findPath, nearestWalkable } from './pathfinding';
 import { isqrt } from './fixed';
@@ -100,6 +100,7 @@ export function validate(state: GameState, player: PlayerId, cmd: Command): stri
       const t = ts ?? tb;
       if (!t || t.hp <= 0) return 'Ungültiges Ziel';
       if (t.owner === player) return 'Eigene Einheiten nicht angreifbar';
+      if (inPeace(state)) return 'Friedenszeit';
       return null;
     }
     case 'stop':

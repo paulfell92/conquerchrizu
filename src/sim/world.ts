@@ -37,6 +37,23 @@ export function reject(state: GameState, owner: PlayerId, reason: string): void 
   emit(state, { t: 'rejected', owner, reason });
 }
 
+/** Configured peace length in ticks (>= 0, integer). */
+export function peaceTicksOf(state: GameState): number {
+  const p = state.config.peaceTicks;
+  return typeof p === 'number' && p > 0 ? Math.trunc(p) : 0;
+}
+
+/** True while the peace phase ("Friedenszeit") is running. */
+export function inPeace(state: GameState): boolean {
+  return state.tick < peaceTicksOf(state);
+}
+
+/** Income handicap of a player in percent (default 100). */
+export function incomePctOf(state: GameState, player: PlayerId): number {
+  const v = state.config.players[player]?.incomePct;
+  return typeof v === 'number' && v >= 0 ? Math.trunc(v) : 100;
+}
+
 export function enemyOf(p: PlayerId): PlayerId {
   return p === 0 ? 1 : 0;
 }

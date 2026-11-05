@@ -12,6 +12,9 @@ import {
   bodyRadius,
   emit,
   enemyOf,
+  incomePctOf,
+  inPeace,
+  peaceTicksOf,
   findBuilding,
   findSquad,
   getTownCenter,
@@ -37,6 +40,8 @@ const APPROACH_MARGIN = 150;
 export function stepState(state: GameState, commands: PlayerCommand[]): void {
   state.events = [];
   if (state.winner !== null) return;
+  const peace = peaceTicksOf(state);
+  if (peace > 0 && state.tick === peace) emit(state, { t: 'peaceOver' });
 
   // 1. commands (caller order: player 0 first, then player 1, submission order)
   for (const pc of commands) {
@@ -66,7 +71,7 @@ export function stepState(state: GameState, commands: PlayerCommand[]): void {
   // 6. victory
   victory(state);
   state.tick++;
-  if (state.winner === null && state.tick >= RULES.hardCapTicks) {
+  if (state.winner === null && state.tick >= RULES.hardCapTicks + peace) {
     const a = state.players[0].vp;
     const b = state.players[1].vp;
     endGame(state, a > b ? 0 : b > a ? 1 : -1, 'timeout');
@@ -277,14 +282,15 @@ function movement(state: GameState): void {
     }
     if (s.order === 'attack') {
       const t = targetOf(state, s.target);
-      if (!t) {
+      if (!t || (t.owner !== s.owner && inPeace(state))) {
         setIdle(s);
       } else {
         chase(state, s, t);
         continue;
       }
     }
-    // idle: auto-acquire
+    // idle: auto-acquire (never during peace)
+    if (inPeace(state)) continue;
     const t = acquire(state, s);
     if (t) {
       s.order = 'attack';
@@ -444,6 +450,14 @@ export function buildingDamage(state: GameState, b: Building, t: Squad): number 
 }
 
 function combat(state: GameState): void {
+  if (inPeace(state)) {
+    // no damage between players at all; towers/TC just cool down
+    for (const b of state.buildings) {
+      if (b.cooldown > 0) b.cooldown--;
+      b.target = null;
+    }
+    return;
+  }
   const hits: Hit[] = [];
   // squads
   for (const s of state.squads) {
@@ -506,7 +520,9 @@ function combat(state: GameState): void {
     const p = state.players[s.owner];
     const killer = state.players[enemyOf(s.owner)];
     const total = def.cost.food + def.cost.wood + def.cost.gold;
-    killer.res.gold += Math.trunc((total * RULES.bountyGoldPctOfCost) / 100);
+    const bounty = Math.trunc((total * RULES.bountyGoldPctOfCost) / 100);
+    const bountyNet = Math.trunc((bounty * incomePctOf(state, killer.id)) / 100);
+    killer.res.gold += bountyNet;
     killer.stats.squadsKilled++;
     p.stats.squadsLost++;
     p.pop -= def.pop;
@@ -589,6 +605,7 @@ function capture(state: GameState): void {
       continue;
     }
     if (pt.owner !== -1) {
+      if (inPeace(state)) continue; // enemy points are safe during peace
       // neutralise the enemy point
       pt.capturer = who;
       pt.progress -= rate;
@@ -640,6 +657,12 @@ function income(state: GameState): void {
       w += Math.trunc((inc.wood * pct) / 100);
       g += Math.trunc((inc.gold * pct) / 100);
     }
+    const pct = incomePctOf(state, p.id);
+    if (pct !== 100) {
+      f = Math.trunc((f * pct) / 100);
+      w = Math.trunc((w * pct) / 100);
+      g = Math.trunc((g * pct) / 100);
+    }
     p.res.food += f;
     p.res.wood += w;
     p.res.gold += g;
@@ -677,10 +700,10 @@ function victoryPoints(state: GameState): void {
     if (p.owner === 0) n0++;
     else if (p.owner === 1) n1++;
   }
-  if (n0 === n1) return;
+  if (n0 === n1 || inPeace(state)) return;
   const diff = n0 > n1 ? n0 - n1 : n1 - n0;
   let drain = diff * RULES.vpDrainPerPoint;
-  if (state.tick >= RULES.vpDrainDoubleAfterTicks) drain *= 2;
+  if (state.tick >= RULES.vpDrainDoubleAfterTicks + peaceTicksOf(state)) drain *= 2;
   const loser = n0 < n1 ? 0 : 1;
   state.players[loser].vp -= drain;
 }

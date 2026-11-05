@@ -21,7 +21,7 @@ import { BUILDINGS, TECHS, UNITS } from '../content';
 import { createInitialState, mapOf, slotPos } from './init';
 import { stepState, squadDamage as squadDamageInternal } from './tick';
 import { hasRes, validate } from './commands';
-import { findBuilding, findSquad, getTownCenter } from './world';
+import { findBuilding, findSquad, getTownCenter, inPeace, peaceTicksOf } from './world';
 import { clock, clone, hash, visibility } from './queries';
 import { findPath as findPathInternal, walkable } from './pathfinding';
 import { dist as distInternal, isqrt as isqrtInternal } from './fixed';
@@ -130,6 +130,17 @@ export function formatClock(tick: number): string {
 }
 
 // ---------------------------------------------------------------- additions (sim agent)
+
+/** True while the peace phase ("Friedenszeit", config.peaceTicks) is running. */
+export function isPeace(state: GameState): boolean {
+  return inPeace(state);
+}
+
+/** Ticks until peace ends (0 when there is no peace / it is over). */
+export function peaceTicksLeft(state: GameState): number {
+  const left = peaceTicksOf(state) - state.tick;
+  return left > 0 ? left : 0;
+}
 
 /** Smoothed walkable path (waypoints in milli-tiles) – same planner the squads use. */
 export function findPath(state: GameState, from: Vec, to: Vec): Vec[] {
