@@ -5,7 +5,7 @@
  */
 import type { Building, BuildingKind, Command, Resources, Squad, TechId, UnitKind } from '../../sim/types';
 import { AGE_NAMES, BUILDINGS, POINT_NAMES, RULES, TECHS, UNITS } from '../../content';
-import { svgIcon, type IconName } from '../icons';
+import { iconFor, svgIcon, type IconName } from '../icons';
 import { costParts, esc, formatClock } from '../util';
 import { CPU, HUMAN, type Session } from '../session';
 
@@ -26,6 +26,12 @@ export interface HudActions {
   toggleSpeed(): void;
   toggleBoxMode(): void;
   minimapJump(fx: number, fy: number): void;
+  toggleFollow(): void;
+  replayPause(): void;
+  replaySpeed(v: number): void;
+  replaySeek(tick: number): void;
+  replayEnd(): void;
+  netAction(id: string): void;
 }
 
 const ORDER_TEXT: Record<string, string> = {
@@ -46,6 +52,8 @@ function costHtml(c: Resources, have: Resources | null): string {
     .join('');
 }
 
+const speedLabel = (v: number) => (v === 0.75 ? '0,75×' : `${v}×`);
+
 export class Hud {
   readonly root: HTMLElement;
   private s: Session | null = null;
@@ -59,6 +67,10 @@ export class Hud {
   boxMode = false;
   /** Set by main from prefs: show the double-tap hint chip. */
   commandHint = true;
+  /** Opponent label in the top bar, e.g. "CPU · Wirtschafter" or "Gegner". */
+  opponentLabel = 'CPU';
+  meLabel = 'Du';
+  private seeking = false;
 
   constructor(
     parent: HTMLElement,
@@ -81,6 +93,7 @@ export class Hud {
           <div class="side cpu"><div class="lbl"><b>0</b><span class="pts">CPU · 0 Punkte</span></div><div class="bar"><i></i></div></div>
         </div>
         <div class="tb-btns">
+          <span class="panel tbtn hidden" id="ping" title="Ping">– ms</span>
           <button class="panel tbtn" id="speed" title="Spieltempo">1×</button>
           <button class="panel tbtn" id="pause" title="Pause (P)" aria-label="Pause">${svgIcon('pause')}</button>
         </div>
@@ -90,6 +103,7 @@ export class Hud {
           <button class="panel" id="t-box" title="Auswahlrahmen: Ziehen wählt Trupps aus">${svgIcon('select')}Auswahl</button>
           <button class="panel" id="t-army" title="Ganze Armee wählen (A)">${svgIcon('army')}Armee</button>
           <button class="panel" id="t-home" title="Zum Dorfzentrum (Leertaste)">${svgIcon('towncenter')}Basis</button>
+          <button class="panel" id="t-follow" title="Neue Trupps folgen der Armee: Sammelpunkt aller Gebäude wandert mit deinen Befehlen" aria-pressed="true">${svgIcon('flag')}Folgen</button>
         </div>
         <canvas id="minimap"></canvas>
       </div>
@@ -98,10 +112,19 @@ export class Hud {
       <div id="toasts" aria-live="polite"></div>
       <div id="modehint" class="panel hidden"><span></span><button>Abbrechen</button></div>
       <div id="peace" class="panel hidden">${svgIcon('flag')}<span></span></div>
+      <div id="objective" class="panel hidden"><div class="ot"></div><div class="ob"><i></i></div></div>
+      <div id="replaybar" class="panel hidden">
+        <button class="tbtn" data-r="pause" aria-label="Pause">${svgIcon('pause')}</button>
+        <div class="rspeeds">${[1, 4, 8].map((v) => `<button class="tbtn" data-r="speed" data-v="${v}">${v}×</button>`).join('')}</div>
+        <input type="range" id="seek" min="0" max="100" step="1" value="0" aria-label="Zeitleiste">
+        <span class="rtime">00:00 / 00:00</span>
+        <button class="tbtn rend" data-r="end">Replay beenden</button>
+      </div>
+      <div id="netover" class="overlay dim hidden"><div class="dialog panel"><h2></h2><p class="sub"></p><div class="btns"></div></div></div>
       <div id="cmdhint" class="hidden">${svgIcon('target')}<span>Doppeltippen = Befehl</span></div>
     `;
     parent.appendChild(this.root);
-    for (const id of ['res', 'vp', 'speed', 'pause', 'cards', 'ctx', 'toasts', 'modehint', 'peace', 'cmdhint', 't-box', 't-army', 't-home'])
+    for (const id of ['res', 'vp', 'speed', 'pause', 'cards', 'ctx', 'toasts', 'modehint', 'peace', 'cmdhint', 't-box', 't-army', 't-home', 't-follow', 'objective', 'replaybar', 'netover', 'ping'])
       this.els[id] = this.root.querySelector('#' + id)!;
     this.mm = this.root.querySelector('#minimap')!;
 
@@ -110,6 +133,25 @@ export class Hud {
     this.els['t-box'].addEventListener('click', () => act.toggleBoxMode());
     this.els['t-army'].addEventListener('click', () => act.selectArmy());
     this.els['t-home'].addEventListener('click', () => act.jumpHome());
+    this.els['t-follow'].addEventListener('click', () => act.toggleFollow());
+    const rb = this.els.replaybar;
+    rb.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest('[data-r]') as HTMLElement | null;
+      if (!b) return;
+      if (b.dataset.r === 'pause') act.replayPause();
+      if (b.dataset.r === 'speed') act.replaySpeed(Number(b.dataset.v));
+      if (b.dataset.r === 'end') act.replayEnd();
+    });
+    const seek = rb.querySelector('#seek') as HTMLInputElement;
+    seek.addEventListener('input', () => (this.seeking = true));
+    seek.addEventListener('change', () => {
+      this.seeking = false;
+      act.replaySeek(Number(seek.value));
+    });
+    this.els.netover.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest('[data-n]') as HTMLElement | null;
+      if (b) act.netAction(b.dataset.n!);
+    });
     this.els.modehint.querySelector('button')!.addEventListener('click', () => act.cancelMode());
 
     // minimap: tap / drag to jump
@@ -231,7 +273,7 @@ export class Hud {
     }
     const showHint = this.commandHint && s.selected.size > 0 && s.mode === 'none';
     this.els.cmdhint.classList.toggle('hidden', !showHint);
-    const sig = `${me.res.food}|${me.res.wood}|${me.res.gold}|${me.pop}|${me.popCap}|${me.vp}|${cpu.vp}|${pts}|${me.age}|${Math.floor(st.tick / 20)}|${s.speed}|${s.paused}`;
+    const sig = `${me.res.food}|${me.res.wood}|${me.res.gold}|${me.pop}|${me.popCap}|${me.vp}|${cpu.vp}|${pts}|${me.age}|${Math.floor(st.tick / 20)}|${s.speed}|${s.paused}|${this.opponentLabel}`;
     if (sig === this.topSig) return;
     this.topSig = sig;
     const r = this.els.res.querySelectorAll('.r span');
@@ -245,15 +287,16 @@ export class Hud {
     const sides = vp.querySelectorAll('.side');
     const set = (el: Element, v: number, n: number, who: string) => {
       el.querySelector('b')!.textContent = String(Math.max(0, v));
-      el.querySelector('.pts')!.textContent = `${who} · ${n} ${n === 1 ? 'Punkt' : 'Punkte'}`;
+      el.querySelector('.pts')!.textContent = `${who} · ${n} P.`;
+      (el.querySelector('.pts') as HTMLElement).title = `${who}: ${n} ${n === 1 ? 'Punkt' : 'Punkte'}`;
       (el.querySelector('.bar i') as HTMLElement).style.width = `${Math.max(0, Math.min(100, (v / max) * 100))}%`;
     };
-    set(sides[0], me.vp, pts[0], 'Du');
-    set(sides[1], cpu.vp, pts[1], 'CPU');
+    set(sides[0], me.vp, pts[HUMAN], this.meLabel);
+    set(sides[1], cpu.vp, pts[CPU], this.opponentLabel);
     vp.querySelector('.clock span')!.textContent = formatClock(st.tick);
     vp.querySelector('.clock small')!.textContent = AGE_NAMES[me.age];
-    this.els.speed.textContent = s.speed === 2 ? '2×' : '1×';
-    this.els.speed.classList.toggle('on', s.speed === 2);
+    this.els.speed.textContent = speedLabel(s.speed);
+    this.els.speed.classList.toggle('on', s.speed !== 1);
   }
 
   private updateCards(s: Session) {
@@ -431,21 +474,33 @@ export class Hud {
       const p = st.points.find((x) => x.id === s.selPoint);
       if (!p) return null;
       const inc = RULES.pointIncome[p.kind];
-      const mult = p.level === 2 ? RULES.pointLevel2IncomePct : 100;
+      const lv = p.level as number;
+      const mult = lv >= 3 ? (RULES as { pointLevel3IncomePct?: number }).pointLevel3IncomePct ?? 200 : lv === 2 ? RULES.pointLevel2IncomePct : 100;
       const parts = costParts({ food: Math.trunc((inc.food * mult) / 100), wood: Math.trunc((inc.wood * mult) / 100), gold: Math.trunc((inc.gold * mult) / 100) });
       const incTxt = parts.map((x) => `+${x.v} ${x.k === 'food' ? 'Nahrung' : x.k === 'wood' ? 'Holz' : 'Gold'}`).join(', ');
       const ownerTxt = p.owner === HUMAN ? 'Dein Punkt' : p.owner === CPU ? 'Gehört der CPU' : 'Neutral';
       const col = p.owner >= 0 ? st.players[p.owner].color : '#8a7d5e';
       let body = `<div class="stats"><span>Ertrag</span><b>${incTxt} / s</b><span>Stufe</span><b>${p.level}</b>
         <span>Einnahme</span><b>${Math.round((p.progress / RULES.captureMax) * 100)} %</b></div>`;
-      if (p.owner === HUMAN && p.level === 1) {
-        const why = s.validate({ t: 'upgradePoint', point: p.id });
-        body += `<div class="grid">${this.actBtn('upgrade', `data-p="${p.id}"`, 'upgrade', 'Ausbauen (+50 %)', RULES.pointUpgradeCost, why, me.res, 'wide')}</div>`;
-      } else if (p.owner !== HUMAN) {
+      const tower = s.api.pointTower(st, p.id);
+      if (tower) body += `<div class="note">${svgIcon('tower', 'ic inl')} Befestigt: Wachturm ${tower.buildTicksLeft > 0 ? 'im Bau' : `${tower.hp}/${tower.maxHp}`}</div>`;
+      if (p.owner === HUMAN) {
+        const btns: string[] = [];
+        if (lv < 3) {
+          const why = s.validate({ t: 'upgradePoint', point: p.id });
+          btns.push(this.actBtn('upgrade', `data-p="${p.id}"`, 'upgrade', lv === 1 ? 'Ausbauen (Stufe 2)' : 'Ausbauen (Stufe 3)', s.api.pointUpgradeCost(lv), why, me.res, 'wide'));
+        }
+        if (!tower && BUILDINGS.pointtower) {
+          const why = s.validate({ t: 'fortifyPoint', point: p.id });
+          btns.push(this.actBtn('fortify', `data-p="${p.id}"`, 'tower', 'Befestigen (Wachturm)', BUILDINGS.pointtower.cost, why, me.res, 'wide'));
+        }
+        if (btns.length) body += `<div class="grid">${btns.join('')}</div>`;
+        body += `<div class="note">${lv >= 3 ? 'Voll ausgebaut. ' : ''}Wird der Punkt erobert, geht der Ausbau verloren.</div>`;
+      } else {
         body += `<div class="note">Wähle Trupps und tippe doppelt auf den Punkt. Steht nur deine Seite im Kreis, gehört er bald dir.</div>`;
-      } else body += `<div class="note">Voll ausgebaut. Wird der Punkt erobert, geht der Ausbau verloren.</div>`;
+      }
       const html = `${this.head(p.kind as IconName, col, p.name, `${POINT_NAMES[p.kind]} · ${ownerTxt}`)}<div class="body">${body}</div>`;
-      return { sig: `pt|${p.id}|${p.owner}|${p.level}|${Math.round(p.progress / 5)}|${resSig}`, html };
+      return { sig: `pt|${p.id}|${p.owner}|${p.level}|${Math.round(p.progress / 5)}|${resSig}|${tower ? tower.id + ':' + tower.buildTicksLeft + ':' + Math.round(tower.hp / 50) : 0}`, html };
     }
 
     // --- enemy info
@@ -457,7 +512,7 @@ export class Hud {
       const name = q ? UNITS[q.kind].name : BUILDINGS[b!.kind].name;
       const desc = q ? UNITS[q.kind].description : BUILDINGS[b!.kind].description;
       const pct = Math.round((e.hp / e.maxHp) * 100);
-      const html = `${this.head((q ? q.kind : b!.kind) as IconName, st.players[CPU].color, name, q ? `CPU · ${q.members} Mann` : 'CPU')}
+      const html = `${this.head(iconFor(q ? q.kind : b!.kind), st.players[CPU].color, name, q ? `${this.opponentLabel} · ${q.members} Mann` : this.opponentLabel)}
         <div class="body"><div class="hpline"><i style="width:${pct}%;background:var(--bad)"></i></div>
         <div class="note">${esc(desc)}</div>
         <div class="note">${s.peace ? 'Friedenszeit: Angriffe sind noch nicht möglich.' : 'Wähle eigene Trupps und tippe doppelt auf diesen Gegner, um anzugreifen.'}</div></div>`;
@@ -475,7 +530,7 @@ export class Hud {
     let body = `<div class="hpline"><i data-prog="${b.id}" data-kind="${building ? 'build' : 'hp'}" style="background:${building ? 'var(--warn)' : 'var(--good)'}"></i></div>`;
     if (building) {
       body += `<div class="note">${esc(d.description)} Wird gerade gebaut – danach kann es arbeiten.</div>`;
-      return { sig: `b|${b.id}|build`, html: `${this.head(b.kind as IconName, me.color, d.name, sub)}<div class="body">${body}</div>` };
+      return { sig: `b|${b.id}|build`, html: `${this.head(iconFor(b.kind), me.color, d.name, sub)}<div class="body">${body}</div>` };
     }
     // queue
     if (b.queue.length) {
@@ -499,19 +554,33 @@ export class Hud {
       if (me.techs.includes(t)) continue;
       if ((t === 'age3' && me.age < 2) || (t === 'age2' && me.age >= 2)) continue;
       if (t === 'age3' && me.age >= 3) continue;
-      const why = s.validate({ t: 'research', building: b.id, tech: t });
       const td = TECHS[t];
-      const icon: IconName = t === 'age2' || t === 'age3' ? 'age' : t === 'armor1' ? 'blacksmith' : 'sword';
+      if (!td) continue;
+      // hide techs two ages ahead to keep the panel short
+      if (td.age > me.age + 1) continue;
+      const why = s.validate({ t: 'research', building: b.id, tech: t });
+      const icon: IconName = t === 'age2' || t === 'age3' ? 'age' : t.startsWith('housing') ? 'village' : t.startsWith('armor') ? 'blacksmith' : 'sword';
       btns.push(this.actBtn('research', `data-b="${b.id}" data-t="${t}" title="${esc(td.description)}"`, icon, td.name, s.api.techCost(st, HUMAN, t as TechId), why, me.res));
     }
     if (btns.length) body += `<h4>${d.trains.length ? 'Ausbilden' : 'Erforschen'}</h4><div class="grid">${btns.join('')}</div>`;
+    let hireSig = '';
+    if (b.kind === 'towncenter' && (RULES as { hireCostPct?: number }).hireCostPct !== undefined) {
+      const left = s.api.hireCooldownLeft(st, HUMAN);
+      const kinds = (Object.keys(UNITS) as UnitKind[]).filter((u) => u !== 'scout' && UNITS[u].age <= Math.max(me.age, 2));
+      const hb = kinds.map((u) => {
+        const why = s.validate({ t: 'hire', unit: u });
+        return this.actBtn('hire', `data-u="${u}" title="${esc(UNITS[u].description)}"`, u as IconName, UNITS[u].name, s.api.hireCost(u), why, me.res);
+      });
+      body += `<h4>Söldner <span class="h4sub">${left > 0 ? `bereit in ${formatClock(left + 19)}` : 'sofort, nur Gold'}</span></h4><div class="grid">${hb.join('')}</div>`;
+      hireSig = `${Math.ceil(left / 20)}`;
+    }
     if (d.trains.length) body += `<div class="grid">${this.actBtn('rally', `data-b="${b.id}"`, 'flag', b.rally ? 'Sammelpunkt ändern' : 'Sammelpunkt setzen', null, null, me.res, 'wide' + (s.mode === 'rally' ? ' hot' : ''))}</div>`;
     if (!btns.length && !d.trains.length) body += `<div class="note">${esc(d.description)}</div>`;
     else body += `<div class="note">${esc(d.description)}</div>`;
     const qsig = b.queue.map((q) => q.item).join('.');
     return {
-      sig: `b|${b.id}|${qsig}|${resSig}|${!!b.rally}|${s.mode}`,
-      html: `${this.head(b.kind as IconName, me.color, d.name, `${sub} · ${b.hp}/${b.maxHp}`)}<div class="body">${body}</div>`,
+      sig: `b|${b.id}|${qsig}|${resSig}|${!!b.rally}|${s.mode}|${hireSig}`,
+      html: `${this.head(iconFor(b.kind), me.color, d.name, `${sub} · ${b.hp}/${b.maxHp}`)}<div class="body">${body}</div>`,
     };
   }
 
@@ -557,7 +626,92 @@ export class Hud {
       case 'upgrade':
         this.act.issue({ t: 'upgradePoint', point: n('p') });
         break;
+      case 'fortify':
+        this.act.issue({ t: 'fortifyPoint', point: n('p') });
+        break;
+      case 'hire':
+        this.act.issue({ t: 'hire', unit: el.dataset.u as UnitKind });
+        break;
     }
+  }
+
+  // ------------------------------------------------------------ modes: follow, mission, replay, net
+
+  setFollow(on: boolean) {
+    const b = this.els['t-follow'];
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
+
+  /** Mission tracker; null hides it. */
+  setObjective(o: { text: string; progress: number } | null) {
+    const el = this.els.objective;
+    if (!o) {
+      el.classList.add('hidden');
+      document.body.classList.remove('has-obj');
+      return;
+    }
+    el.classList.remove('hidden');
+    document.body.classList.add('has-obj');
+    const t = el.querySelector('.ot')!;
+    if (t.textContent !== o.text) t.textContent = o.text;
+    (el.querySelector('.ob i') as HTMLElement).style.width = `${Math.round(Math.max(0, Math.min(1, o.progress)) * 100)}%`;
+  }
+
+  /** Replay mode: bar visible, gameplay HUD trimmed. */
+  setReplay(on: boolean) {
+    this.els.replaybar.classList.toggle('hidden', !on);
+    document.body.classList.toggle('replay', on);
+  }
+  updateReplay(tick: number, end: number, paused: boolean, speed: number) {
+    const rb = this.els.replaybar;
+    const seek = rb.querySelector('#seek') as HTMLInputElement;
+    const max = Math.max(1, end);
+    if (seek.max !== String(max)) seek.max = String(max);
+    if (!this.seeking) seek.value = String(Math.min(tick, max));
+    const t = `${formatClock(tick)} / ${formatClock(end)}`;
+    const tl = rb.querySelector('.rtime')!;
+    if (tl.textContent !== t) tl.textContent = t;
+    const pb = rb.querySelector('[data-r="pause"]')!;
+    const want = paused ? 'play' : 'pause';
+    if ((pb as HTMLElement).dataset.icon !== want) {
+      (pb as HTMLElement).dataset.icon = want;
+      pb.innerHTML = svgIcon(want);
+      pb.setAttribute('aria-label', paused ? 'Abspielen' : 'Pause');
+    }
+    rb.querySelectorAll<HTMLElement>('[data-r="speed"]').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === speed));
+  }
+
+  /** Online overlay (disconnect countdown, desync). null hides it. */
+  setNetOverlay(o: { title: string; text: string; buttons: { id: string; label: string; primary?: boolean }[] } | null) {
+    const el = this.els.netover;
+    if (!o) {
+      el.classList.add('hidden');
+      return;
+    }
+    el.querySelector('h2')!.textContent = o.title;
+    el.querySelector('.sub')!.textContent = o.text;
+    const sig = o.buttons.map((b) => b.id).join(',');
+    const bx = el.querySelector('.btns') as HTMLElement;
+    if (bx.dataset.sig !== sig) {
+      bx.dataset.sig = sig;
+      bx.innerHTML = o.buttons.map((b) => `<button class="btn ${b.primary ? 'primary' : ''}" data-n="${b.id}">${esc(b.label)}</button>`).join('');
+    }
+    el.classList.remove('hidden');
+  }
+
+  /** Online: no speed button; the pause button opens the surrender dialog. Shows the ping chip. */
+  setOnline(on: boolean) {
+    this.els.speed.classList.toggle('hidden', on);
+    this.els.ping.classList.toggle('hidden', !on);
+  }
+  private lastPing = -1;
+  setPing(ms: number | undefined) {
+    const v = ms === undefined ? 0 : Math.round(ms);
+    if (v === this.lastPing) return;
+    this.lastPing = v;
+    this.els.ping.textContent = ms === undefined ? '– ms' : `${v} ms`;
+    this.els.ping.classList.toggle('bad', v > 250);
   }
 
   // ------------------------------------------------------------ toasts

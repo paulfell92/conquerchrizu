@@ -7,7 +7,9 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "simulate": "tsx tools/simulate.ts"
+    "simulate": "tsx tools/simulate.ts",
+    "relay": "tsx server/node/server.ts",
+    "typecheck:server": "tsc -p server --noEmit"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

@@ -1,0 +1,18 @@
+# Conquer Chrizu relay on Cloudflare Workers + Durable Objects.
+#   cd server/cloudflare && npx wrangler login && npx wrangler deploy
+# URL afterwards: wss://conquerchrizu-relay.<your-subdomain>.workers.dev
+name = "conquerchrizu-relay"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+
+[[durable_objects.bindings]]
+name = "LOBBY"
+class_name = "LobbyRoom"
+
+# SQLite-backed Durable Objects are available on the Workers Free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LobbyRoom"]
+
+[observability]
+enabled = true

@@ -8,7 +8,7 @@ import { BUILDINGS, RULES, UNITS } from '../../content';
 import type { Camera } from '../camera';
 import { CPU, HUMAN, type Remembered, type Session } from '../session';
 import { buildTerrain, type Terrain, TERRAIN_PX } from './terrain';
-import { drawIcon, type IconName } from '../icons';
+import { drawIcon, iconFor, type IconName } from '../icons';
 import { hexRgb, shade } from '../util';
 
 const NEUTRAL = '#d8cfb6';
@@ -159,7 +159,10 @@ export class Renderer {
 
     // ---- remembered (fogged) enemy buildings
     for (const r of s.remembered.values()) {
-      if (!s.isVisible(r.x, r.y) && inView(r.x, r.y)) this.drawBuildingShape(r.kind, r.owner, r.x, r.y, r.building ? 0.5 : 1, true);
+      if (!s.isVisible(r.x, r.y) && inView(r.x, r.y)) {
+        const p = drawPos(r);
+        this.drawBuildingShape(r.kind, r.owner, p.x, p.y, r.building ? 0.5 : 1, true);
+      }
     }
     // ---- live buildings
     for (const b of st.buildings) {
@@ -251,13 +254,14 @@ export class Renderer {
     for (const b of st.buildings) {
       if (b.owner !== HUMAN && !s.isVisible(b.x, b.y)) continue;
       if (!inView(b.x, b.y)) continue;
-      const r = b.kind === 'towncenter' ? RULES.townCenterRadius : RULES.buildingRadius;
+      const r = footprint(b.kind);
       const sel = s.selBuilding === b.id || s.selEnemy === b.id;
-      const sx = cam.sx(b.x);
-      const sy = cam.sy(b.y - r) - 8;
+      const dp = drawPos(b);
+      const sx = cam.sx(dp.x);
+      const sy = cam.sy(dp.y - r) - 8;
       const w = Math.max(28, (r / TILE) * z * 1.5);
       if (b.buildTicksLeft > 0) {
-        const tot = BUILDINGS[b.kind].buildTicks || 1;
+        const tot = BUILDINGS[b.kind]?.buildTicks || 1;
         this.bar(sx, sy, w, 1 - b.buildTicksLeft / tot, '#e8c25a');
       } else if (b.hp < b.maxHp || sel) this.bar(sx, sy, w, b.hp / b.maxHp, this.hpColor(b.hp / b.maxHp, b.owner));
       if (b.queue.length && b.owner === HUMAN && b.buildTicksLeft === 0) {
@@ -473,21 +477,23 @@ export class Renderer {
   // ------------------------------------------------------------ buildings
 
   private drawBuilding(b: Building, sel: boolean) {
-    const tot = BUILDINGS[b.kind].buildTicks || 1;
+    const tot = BUILDINGS[b.kind]?.buildTicks || 1;
     const prog = b.buildTicksLeft > 0 ? 1 - b.buildTicksLeft / tot : 1;
     const hit = this.s!.lastHit.get(b.id);
     const flash = hit !== undefined && this.s!.state.tick - hit < 3;
     if (sel) {
       const g = this.ctx;
       this.worldTx();
-      const r = (b.kind === 'towncenter' ? RULES.townCenterRadius : RULES.buildingRadius) / TILE;
+      const r = footprint(b.kind) / TILE;
+      const dp = drawPos(b);
       g.strokeStyle = b.owner === HUMAN ? '#fff3c4' : '#ffb4a2';
       g.lineWidth = 2.5 / this.cam.zoom;
       g.beginPath();
-      g.ellipse(b.x / TILE, b.y / TILE + r * 0.08, r * 1.12, r * 1.02, 0, 0, Math.PI * 2);
+      g.ellipse(dp.x / TILE, dp.y / TILE + r * 0.08, r * 1.12, r * 1.02, 0, 0, Math.PI * 2);
       g.stroke();
     }
-    this.drawBuildingShape(b.kind, b.owner, b.x, b.y, prog, false, flash);
+    const p = drawPos(b);
+    this.drawBuildingShape(b.kind, b.owner, p.x, p.y, prog, false, flash);
     // towers / TC firing: small target line handled by fx
   }
 
@@ -497,7 +503,7 @@ export class Renderer {
     const x = mx / TILE;
     const y = my / TILE;
     const big = kind === 'towncenter';
-    const r = (big ? RULES.townCenterRadius : RULES.buildingRadius) / TILE;
+    const r = footprint(kind) / TILE;
     const P = this.pal[owner] ?? palette('#888888');
     if (ghost) g.globalAlpha = 0.55;
     // ground shadow
@@ -534,7 +540,7 @@ export class Renderer {
     }
     this.roof(kind, x, y, r, P);
     const iconCol = 'rgba(255,250,236,0.92)';
-    drawIcon(g, kind as IconName, x, y + (kind === 'tower' ? 0 : r * 0.06), r * (big ? 0.75 : 0.85), iconCol, 2.3);
+    drawIcon(g, iconFor(kind), x, y + (kind === 'tower' || kind === 'pointtower' ? 0 : r * 0.06), r * (big ? 0.75 : 0.85), iconCol, 2.3);
     if (flash) {
       g.fillStyle = 'rgba(255,240,220,0.35)';
       g.beginPath();
@@ -580,6 +586,7 @@ export class Renderer {
         this.hipRoof(x, y, r * 0.5, r * 0.5, P);
         break;
       }
+      case 'pointtower':
       case 'tower': {
         g.fillStyle = stoneD;
         g.beginPath();
@@ -1150,13 +1157,15 @@ export class Renderer {
     if (best) return { t: 'squad', squad: best };
     for (const b of st.buildings) {
       if (b.owner !== HUMAN && !s.isVisible(b.x, b.y)) continue;
-      const r = b.kind === 'towncenter' ? RULES.townCenterRadius : RULES.buildingRadius;
-      if (Math.abs(b.x - wx) <= r + slack * 0.5 && Math.abs(b.y - wy) <= r + slack * 0.5) return { t: 'building', building: b };
+      const r = footprint(b.kind);
+      const dp = drawPos(b);
+      if (Math.abs(dp.x - wx) <= r + slack * 0.5 && Math.abs(dp.y - wy) <= r + slack * 0.5) return { t: 'building', building: b };
     }
     for (const r of s.remembered.values()) {
       if (s.isVisible(r.x, r.y)) continue;
-      const rad = r.kind === 'towncenter' ? RULES.townCenterRadius : RULES.buildingRadius;
-      if (Math.abs(r.x - wx) <= rad && Math.abs(r.y - wy) <= rad) return { t: 'remembered', rem: r };
+      const rad = footprint(r.kind);
+      const dp = drawPos(r);
+      if (Math.abs(dp.x - wx) <= rad && Math.abs(dp.y - wy) <= rad) return { t: 'remembered', rem: r };
     }
     try {
       for (const sl of s.api.slots(st, HUMAN)) {
@@ -1192,6 +1201,18 @@ export class Renderer {
     return out;
   }
 }
+
+/** Footprint radius (milli-tiles) used for drawing, bars and picking. */
+export function footprint(kind: string): number {
+  if (kind === 'towncenter') return RULES.townCenterRadius;
+  if (kind === 'pointtower') return Math.round(RULES.buildingRadius * 0.62);
+  return RULES.buildingRadius;
+}
+/** Point towers stand beside the point plaque (up-right) so both stay readable. */
+export const PT_DX = 1350;
+export const PT_DY = -1150;
+const drawPos = (b: { kind: string; x: number; y: number }) =>
+  b.kind === 'pointtower' ? { x: b.x + PT_DX, y: b.y + PT_DY } : { x: b.x, y: b.y };
 
 export type Pick =
   | { t: 'squad'; squad: Squad }

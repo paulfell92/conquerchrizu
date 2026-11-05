@@ -3,15 +3,23 @@
  * fixed-rate stepping with an accumulator, client-side memory (explored tiles,
  * remembered enemy buildings), selection and cosmetic effects fed by events.
  */
-import type { Building, BuildingKind, Command, GameEvent, GameState, PlayerId, Squad } from '../sim/types';
+import type { Age, Building, BuildingKind, Command, GameConfig, GameEvent, GameState, PlayerCommand, PlayerId, Scenario, Squad } from '../sim/types';
 import { TICK_RATE } from '../sim/types';
 import type { Relay } from '../net/localRelay';
 import * as botModule from '../bot';
-import { Bot, type Difficulty } from '../bot';
+import { Bot, type Difficulty, type Personality } from '../bot';
 import { getApi, type SimApi } from './api';
 
-export const HUMAN: PlayerId = 0;
-export const CPU: PlayerId = 1;
+/**
+ * HUMAN / CPU are the LOCAL player and the opponent. They are live bindings:
+ * an online guest plays as player 1, so `setLocalPlayer(1)` swaps them.
+ */
+export let HUMAN: PlayerId = 0;
+export let CPU: PlayerId = 1;
+export function setLocalPlayer(p: PlayerId) {
+  HUMAN = p;
+  CPU = (1 - p) as PlayerId;
+}
 export const COLORS = ['#3d7be0', '#d9483b'] as const;
 const TICK_MS = 1000 / TICK_RATE;
 
@@ -44,7 +52,33 @@ export interface SessionOptions {
   peaceTicks?: number;
   passiveBot?: boolean;
   tutorial?: boolean;
+  personality?: Personality;
+  aggression?: number;
+  maxAge?: Age;
+  scenario?: Scenario;
+  /** No bot at all (online, replay). */
+  noBot?: boolean;
+  /** Use this exact config instead of building one (replay, online). */
+  config?: GameConfig;
+  /** Custom relay (online). */
+  relay?: (state: GameState) => Relay;
+  /** Local player id (online guest = 1). */
+  me?: PlayerId;
+  /** Replay mode: commands come from a log, fog is off. */
+  replayLog?: PlayerCommand[];
+  /** Online match: no pause, no speed change. */
+  online?: boolean;
 }
+
+/** One stats sample for the end-screen charts (every 5 s game time). */
+export interface StatSample {
+  tick: number;
+  vp: [number, number];
+  army: [number, number];
+  points: [number, number];
+  gathered: [number, number];
+}
+export const SAMPLE_TICKS = 5 * TICK_RATE;
 
 const FALLBACK_INCOME: Record<Difficulty, number> = { easy: 80, normal: 100, hard: 110 };
 /** Bot income handicap from the bot module, with a local fallback if it is missing. */
@@ -89,7 +123,7 @@ export class Session {
   mode: 'none' | 'rally' | 'attack' = 'none';
 
   paused = false;
-  speed: 1 | 2 = 1;
+  speed = 1;
   private acc = 0;
   /** Interpolation fraction 0..1 between previous and current tick. */
   alpha = 0;
@@ -101,11 +135,25 @@ export class Session {
 
   readonly tutorial: boolean;
 
+  readonly opts: SessionOptions;
+  /** Replay: full fog-free view; commands are fed from the log. */
+  readonly replay: boolean;
+  readonly online: boolean;
+  private replayCmds: PlayerCommand[] = [];
+  private replayIdx = 0;
+  readonly samples: StatSample[] = [];
+  /** Bot personality actually used (for the HUD / end screen). */
+  readonly personality: Personality | null;
+
   constructor(difficulty: Difficulty, seed: number, opts: SessionOptions = {}) {
     this.api = getApi();
     this.difficulty = difficulty;
+    this.opts = opts;
     this.tutorial = !!opts.tutorial;
-    this.state = this.api.createGame({
+    this.replay = !!opts.replayLog;
+    this.online = !!opts.online;
+    setLocalPlayer(opts.me ?? 0);
+    const config: GameConfig = opts.config ?? {
       seed,
       mapId: 'chrizu-tal',
       players: [
@@ -113,15 +161,43 @@ export class Session {
         { name: 'CPU', color: COLORS[1], isBot: true, incomePct: botIncomePct(difficulty) },
       ],
       peaceTicks: Math.max(0, Math.round(opts.peaceTicks ?? 0)),
-    });
-    this.relay = this.api.makeRelay(this.state);
-    try {
-      const botOpts = { player: CPU, difficulty, seed: seed ^ 0x5bd1e995, passive: !!opts.passiveBot };
-      this.bot = new Bot(botOpts);
-    } catch (e) {
-      console.warn('[client] Bot konnte nicht erstellt werden', e);
-      this.bot = null;
+      ...(opts.scenario ? { scenario: opts.scenario } : {}),
+    };
+    if (opts.relay) {
+      // a network relay owns its state (created from the server's config)
+      this.relay = opts.relay(null as unknown as GameState);
+      this.state = this.relay.state;
+    } else {
+      this.state = this.api.createGame(config);
+      this.relay = this.api.makeRelay(this.state);
     }
+    if (opts.replayLog) {
+      this.replayCmds = opts.replayLog
+        .map((c, i) => ({ c, i }))
+        .sort((a, b) => a.c.tick - b.c.tick || a.c.player - b.c.player || a.i - b.i)
+        .map((x) => x.c);
+    }
+    this.bot = null;
+    this.personality = null;
+    if (!opts.noBot && !opts.replayLog) {
+      try {
+        const botOpts = {
+          player: CPU,
+          difficulty,
+          seed: seed ^ 0x5bd1e995,
+          passive: !!opts.passiveBot,
+          ...(opts.personality ? { personality: opts.personality } : {}),
+          ...(opts.aggression !== undefined ? { aggression: opts.aggression } : {}),
+          ...(opts.maxAge !== undefined ? { maxAge: opts.maxAge } : {}),
+        };
+        this.bot = new Bot(botOpts);
+        this.personality = this.bot.personality;
+      } catch (e) {
+        console.warn('[client] Bot konnte nicht erstellt werden', e);
+        this.bot = null;
+      }
+    }
+    this.sample();
     this.explored = new Uint8Array(this.state.mapW * this.state.mapH);
     this.vis = [];
     this.refreshVisibility();
@@ -132,6 +208,11 @@ export class Session {
 
   on(fn: SessionListener) {
     this.listeners.push(fn);
+  }
+  private tickHooks: ((s: Session) => void)[] = [];
+  /** Called after every sim tick (mission objectives, online bookkeeping). */
+  onTick(fn: (s: Session) => void) {
+    this.tickHooks.push(fn);
   }
 
   get me() {
@@ -174,7 +255,7 @@ export class Session {
       return 0;
     }
     this.acc += Math.min(dtMs, 250) * this.speed;
-    const maxSteps = 4 * this.speed;
+    const maxSteps = Math.max(2, Math.ceil(4 * this.speed));
     let n = 0;
     while (this.acc >= TICK_MS && n < maxSteps) {
       this.tick();
@@ -197,8 +278,16 @@ export class Session {
         p.y = s.y;
       } else this.prev.set(s.id, { x: s.x, y: s.y });
     }
-    if (!this.relay.advance()) return;
+    if (this.replay) {
+      const due: PlayerCommand[] = [];
+      const c = this.replayCmds;
+      while (this.replayIdx < c.length && c[this.replayIdx].tick < st.tick) this.replayIdx++;
+      while (this.replayIdx < c.length && c[this.replayIdx].tick === st.tick) due.push(c[this.replayIdx++]);
+      this.api.step(st, due);
+    } else if (!this.relay.advance()) return;
     for (const ev of st.events) this.handleEvent(ev);
+    if (st.tick % SAMPLE_TICKS === 0 || st.winner !== null) this.sample();
+    for (const f of this.tickHooks) f(this);
     if (this.bot && !this.botBroken && st.winner === null) {
       try {
         const cmds = this.bot.update(st);
@@ -211,6 +300,44 @@ export class Session {
     if (st.tick % 2 === 0 || st.winner !== null) this.refreshVisibility();
     if (st.tick % 20 === 0) this.prunePrev();
     this.pruneSelection();
+  }
+
+  /** Last tick of the replay log (seek bar length). */
+  get replayEnd(): number {
+    const c = this.replayCmds;
+    return c.length ? c[c.length - 1].tick : 0;
+  }
+
+  /** Fast-forward without rendering (replay seek). Events are skipped. */
+  fastForward(toTick: number) {
+    const st = this.state;
+    while (st.tick < toTick && st.winner === null) {
+      const due: PlayerCommand[] = [];
+      const c = this.replayCmds;
+      while (this.replayIdx < c.length && c[this.replayIdx].tick < st.tick) this.replayIdx++;
+      while (this.replayIdx < c.length && c[this.replayIdx].tick === st.tick) due.push(c[this.replayIdx++]);
+      this.api.step(st, due);
+      if (st.tick % SAMPLE_TICKS === 0 || st.winner !== null) this.sample();
+    }
+    for (const q of st.squads) this.prev.set(q.id, { x: q.x, y: q.y });
+    this.refreshVisibility();
+  }
+
+  private sample() {
+    const st = this.state;
+    const last = this.samples[this.samples.length - 1];
+    if (last && last.tick === st.tick) return;
+    const army: [number, number] = [0, 0];
+    for (const q of st.squads) army[q.owner] += q.hp;
+    const points: [number, number] = [0, 0];
+    for (const p of st.points) if (p.owner === 0 || p.owner === 1) points[p.owner]++;
+    this.samples.push({
+      tick: st.tick,
+      vp: [Math.max(0, st.players[0].vp), Math.max(0, st.players[1].vp)],
+      army,
+      points,
+      gathered: [st.players[0].stats.resourcesGathered, st.players[1].stats.resourcesGathered],
+    });
   }
 
   private prunePrev() {
@@ -246,7 +373,9 @@ export class Session {
 
   refreshVisibility() {
     try {
-      this.vis = this.api.computeVisibility(this.state, HUMAN);
+      if (this.replay) {
+        if (this.vis.length !== this.state.mapW * this.state.mapH) this.vis = new Array(this.state.mapW * this.state.mapH).fill(1);
+      } else this.vis = this.api.computeVisibility(this.state, HUMAN);
     } catch {
       this.vis = new Array(this.state.mapW * this.state.mapH).fill(1);
     }

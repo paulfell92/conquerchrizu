@@ -35,10 +35,21 @@ export interface SimApi {
   unitCost(state: GameState, player: PlayerId, kind: UnitKind): Resources;
   buildingCost(state: GameState, player: PlayerId, kind: BuildingKind): Resources;
   techCost(state: GameState, player: PlayerId, tech: TechId): Resources;
+  step(state: GameState, cmds: PlayerCommand[]): void;
+  hireCost(kind: UnitKind): Resources;
+  hireCooldownLeft(state: GameState, player: PlayerId): number;
+  pointUpgradeCost(level: number): Resources;
+  pointTower(state: GameState, pointId: number): Building | null;
   isPeace(state: GameState): boolean;
   peaceTicksLeft(state: GameState): number;
 }
 
+const anySim = sim as unknown as {
+  hireCost?: (k: UnitKind) => Resources;
+  hireCooldownLeft?: (s: GameState, p: PlayerId) => number;
+  pointUpgradeCost?: (l: number) => Resources;
+  pointTower?: (s: GameState, id: number) => Building | null;
+};
 const peaceLeftLocal = (s: GameState) => Math.max(0, (s.config.peaceTicks ?? 0) - s.tick);
 
 const realApi: SimApi = {
@@ -53,6 +64,11 @@ const realApi: SimApi = {
   unitCost: sim.unitCost,
   buildingCost: sim.buildingCost,
   techCost: sim.techCost,
+  step: sim.step,
+  hireCost: (k) => anySim.hireCost?.(k) ?? { food: 0, wood: 0, gold: 999 },
+  hireCooldownLeft: (s, p) => anySim.hireCooldownLeft?.(s, p) ?? 0,
+  pointUpgradeCost: (l) => anySim.pointUpgradeCost?.(l) ?? (l >= 2 ? RULES.pointLevel3UpgradeCost : RULES.pointUpgradeCost),
+  pointTower: (s, id) => anySim.pointTower?.(s, id) ?? s.buildings.find((b) => b.point === id) ?? null,
   isPeace: (s) => ((sim as { isPeace?: (s: GameState) => boolean }).isPeace ?? ((x: GameState) => peaceLeftLocal(x) > 0))(s),
   peaceTicksLeft: (s) => ((sim as { peaceTicksLeft?: (s: GameState) => number }).peaceTicksLeft ?? peaceLeftLocal)(s),
 };
@@ -90,6 +106,11 @@ const fixtureApi: SimApi = {
   unitCost: (_s, _p, k) => UNITS[k].cost,
   buildingCost: (_s, _p, k) => BUILDINGS[k].cost,
   techCost: (_s, _p, t) => TECHS[t].cost,
+  step: fx.fixtureStep,
+  hireCost: () => ({ food: 0, wood: 0, gold: 999 }),
+  hireCooldownLeft: () => 0,
+  pointUpgradeCost: () => RULES.pointUpgradeCost,
+  pointTower: () => null,
   isPeace: (s) => peaceLeftLocal(s) > 0,
   peaceTicksLeft: peaceLeftLocal,
 };

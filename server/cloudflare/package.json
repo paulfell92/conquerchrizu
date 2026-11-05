@@ -1,0 +1,10 @@
+{
+  "name": "conquerchrizu-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --port 8787",
+    "tail": "wrangler tail"
+  }
+}

@@ -12,7 +12,11 @@ import { Renderer, type Pick } from './render/renderer';
 import { DOUBLE_TAP_MS, Input, type InputHandler } from './input';
 import { Hud } from './hud/hud';
 import { Menus } from './hud/menus';
-import { HUMAN, Session, type SessionOptions } from './session';
+import { HUMAN, Session, setLocalPlayer, type SessionOptions } from './session';
+import { MISSIONS, type MissionMemo } from './campaign/missions';
+import { hasReplay, loadReplay, saveReplay, type StoredReplay } from './replayStore';
+import { personalityInfo, type EndInfo } from './hud/menus';
+import { OnlineController } from './online';
 import { Tutorial } from './hud/tutorial';
 import { prefs } from './prefs';
 import { iconFor } from './icons';
@@ -66,6 +70,18 @@ function moveSelected(x: number, y: number) {
   if (!ids.length) return;
   if (!issue({ t: 'move', squads: ids, x, y })) return;
   commandFeedback(ids, x, y, '#fff3c4');
+  followArmy(ids, x, y);
+}
+/** „Neue Trupps folgen der Armee“: commanding the army also moves the rally of all training buildings. */
+function followArmy(ids: number[], x: number, y: number) {
+  const s = session;
+  if (!s || !prefs.followArmy) return;
+  // only when most of the army is commanded (not for a single scout)
+  const army = s.myArmy().filter((q) => q.kind !== 'scout');
+  const n = ids.filter((id) => army.some((q) => q.id === id)).length;
+  if (army.length === 0 || n * 2 < army.length) return;
+  const cmd: Command = { t: 'rallyAll', x, y };
+  if (s.validate(cmd) === null) s.submit(cmd);
 }
 function attackWithSelected(target: number, x: number, y: number) {
   const s = session!;
@@ -73,6 +89,7 @@ function attackWithSelected(target: number, x: number, y: number) {
   if (!ids.length) return;
   if (!issue({ t: 'attack', squads: ids, target })) return;
   commandFeedback(ids, x, y, '#ff8a6e');
+  followArmy(ids, x, y);
   void s;
 }
 /** Destination marker + a short-lived line from each commanded squad, counts toward the hint. */
@@ -137,8 +154,25 @@ const hud = new Hud(app, {
   jumpHome: () => jumpHome(),
   togglePause: () => setPaused(!session?.paused),
   toggleSpeed: () => {
-    if (session) session.speed = session.speed === 1 ? 2 : 1;
+    const s = session;
+    if (!s || s.online) return;
+    const cyc = [0.75, 1, 2];
+    s.speed = cyc[(cyc.indexOf(s.speed) + 1) % cyc.length] ?? 1;
   },
+  toggleFollow: () => {
+    prefs.followArmy = !prefs.followArmy;
+    hud.setFollow(prefs.followArmy);
+    hud.toast(prefs.followArmy ? 'Neue Trupps folgen der Armee' : 'Neue Trupps bleiben am Sammelpunkt', 'info', 'flag');
+  },
+  replayPause: () => {
+    if (session?.replay) session.paused = !session.paused;
+  },
+  replaySpeed: (v) => {
+    if (session?.replay) session.speed = v;
+  },
+  replaySeek: (t) => replaySeek(t),
+  replayEnd: () => toMenu(),
+  netAction: (id) => online.action(id),
   toggleBoxMode: () => hud.setBoxMode(!hud.boxMode),
   minimapJump: (fx, fy) => {
     if (!session) return;
@@ -147,13 +181,27 @@ const hud = new Hud(app, {
 });
 
 const menus = new Menus(app, {
-  start: (d, peaceMin) => startGame(d, { peaceTicks: peaceMin * 60 * TICK_RATE }),
+  start: (d, peaceMin, pers) =>
+    startGame(d, { peaceTicks: peaceMin * 60 * TICK_RATE, ...(pers !== 'random' ? { personality: pers } : {}) }, { revealPersonality: pers === 'random' }),
   tutorial: () => startTutorial(),
+  mission: (i) => startMission(i),
+  replay: () => void startReplay(),
+  onlineCreate: () => online.create(),
+  onlineJoin: (code) => online.join(code),
+  onlineCancel: () => online.cancel(),
+  retryMission: () => {
+    if (mission) startMission(mission.index);
+  },
+  nextMission: () => {
+    if (mission) startMission(mission.index + 1);
+  },
+  watchReplay: () => void startReplay(),
   resume: () => setPaused(false),
   surrender: () => {
     if (!session) return;
     session.submit({ t: 'surrender' });
-    setPaused(false);
+    if (!session.online) setPaused(false);
+    else menus.showPause(false);
   },
   toMenu: () => toMenu(),
 });
@@ -163,6 +211,12 @@ function toMenu() {
     cancelPendingTap();
     tutorial?.destroy();
     tutorial = null;
+    mission = null;
+    online.leave();
+    hud.setObjective(null);
+    hud.setReplay(false);
+    hud.setNetOverlay(null);
+    menus.replayAvailable = hasReplay();
     menus.showEnd(null);
     menus.showPause(false);
     hud.setVisible(false);
@@ -171,6 +225,14 @@ function toMenu() {
     if (session) session.paused = true;
   }
 }
+
+const online = new OnlineController({
+  hud: () => hud,
+  menus: () => menus,
+  startOnline: (opts, names) => startGame('normal', opts, { names }),
+  session: () => session,
+  toMenu: () => toMenu(),
+});
 
 function syncMode() {
   hud.setMode(session?.mode ?? 'none');
@@ -193,6 +255,15 @@ function jumpHome() {
 function setPaused(p: boolean) {
   const s = session;
   if (!s || s.over) return;
+  if (s.online) {
+    // no pause online; the button opens the surrender dialog only
+    menus.showPause(p);
+    return;
+  }
+  if (s.replay) {
+    s.paused = p;
+    return;
+  }
   s.paused = p;
   menus.showPause(p);
 }
@@ -284,7 +355,7 @@ function commandAt(pk: Pick, x: number, y: number) {
 const handler: InputHandler = {
   tap(x, y, o) {
     const s = session;
-    if (!s || s.over || s.paused) return;
+    if (!s || s.over || s.paused || s.replay) return;
     const now = performance.now();
     const wx = Math.round(cam.wx(x) * TILE);
     const wy = Math.round(cam.wy(y) * TILE);
@@ -337,7 +408,7 @@ const handler: InputHandler = {
   },
   command(x, y) {
     const s = session;
-    if (!s || s.over || s.paused || !s.selected.size) return;
+    if (!s || s.over || s.paused || s.replay || !s.selected.size) return;
     cancelPendingTap();
     commandAt(renderer.pick(x, y, false), x, y);
   },
@@ -437,35 +508,169 @@ function onEvent(ev: GameEvent, s: Session) {
       hud.toast('Friedenszeit vorbei – jetzt wird gekämpft', 'warn', 'barracks');
       break;
     case 'gameOver':
-      window.setTimeout(() => {
-        hud.setVisible(false);
-        menus.showEnd(s.state);
-      }, 900);
+      onGameOver(s);
       break;
   }
 }
 
 // ---------------------------------------------------------------- lifecycle
-function startGame(d: Difficulty, opts: SessionOptions = {}) {
+interface StartExtra {
+  revealPersonality?: boolean;
+  /** Labels for HUD + end screen [player 0, player 1]. */
+  names?: [string, string];
+}
+let startExtra: StartExtra = {};
+
+function startGame(d: Difficulty, opts: SessionOptions = {}, extra: StartExtra = {}) {
   cancelPendingTap();
   tutorial?.destroy();
   tutorial = null;
+  if (!opts.scenario) mission = null;
+  startExtra = extra;
   const seed = params.has('seed') ? Number(params.get('seed')) : (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
   session = new Session(d, seed, opts);
-  session.on(onEvent);
-  cam.setMap(session.state.mapW, session.state.mapH);
-  renderer.setSession(session);
-  hud.bind(session);
-  hud.commandHint = prefs.showCommandHint;
+  const s = session;
+  s.on(onEvent);
+  cam.setMap(s.state.mapW, s.state.mapH);
+  renderer.setSession(s);
+  hud.bind(s);
+  hud.commandHint = prefs.showCommandHint && !s.replay;
+  const pers = s.personality ? personalityInfo(s.personality).label : null;
+  hud.meLabel = extra.names?.[HUMAN] ?? 'Du';
+  hud.opponentLabel = extra.names?.[1 - HUMAN] ?? (pers && !extra.revealPersonality ? pers : 'CPU');
+  hud.setFollow(prefs.followArmy);
+  hud.setOnline(s.online);
+  hud.setReplay(s.replay);
+  hud.setObjective(null);
+  hud.setNetOverlay(null);
   hud.setVisible(true);
   hud.setBoxMode(false);
   menus.showMenu(false);
   menus.showPause(false);
   menus.showEnd(null);
+  menus.showBriefing(null);
   layout();
   cam.zoom = Math.max(cam.minZoom, Math.min(cam.maxZoom, 48, cam.viewW / 26, cam.viewH / 12));
-  jumpHome();
-  if (DEBUG) (window as unknown as { __game: unknown }).__game = { session, cam, renderer, hud, menus, get tutorial() { return tutorial; } };
+  if (s.replay) {
+    cam.zoom = cam.minZoom * 1.1;
+    cam.centerOn((s.state.mapW / 2) * TILE, (s.state.mapH / 2) * TILE);
+  } else jumpHome();
+  if (DEBUG)
+    (window as unknown as { __game: unknown }).__game = {
+      session: s, cam, renderer, hud, menus, online,
+      get tutorial() { return tutorial; },
+      get mission() { return mission; },
+    };
+}
+
+function endNames(s: Session): [string, string] {
+  if (startExtra.names) return startExtra.names;
+  const pers = s.personality ? personalityInfo(s.personality).label : null;
+  const op = pers ? `CPU (${pers})` : 'CPU';
+  return HUMAN === 0 ? ['Du', op] : [op, 'Du'];
+}
+
+function onGameOver(s: Session) {
+  const st = s.state;
+  let missionInfo: EndInfo['mission'] = null;
+  if (mission && !s.replay) {
+    const won = st.winner === HUMAN;
+    const m = MISSIONS[mission.index];
+    if (won) prefs.missionWon(mission.index, m.id, st.tick);
+    missionInfo = { index: mission.index, title: m.title, won, best: prefs.bestTime(m.id), failText: mission.failText };
+  }
+  const names = endNames(s);
+  const finish = (replayOk: boolean) => {
+    window.setTimeout(() => {
+      if (session !== s) return;
+      hud.setVisible(false);
+      hud.setNetOverlay(null);
+      menus.showEnd(st, {
+        names,
+        samples: s.samples,
+        personality: startExtra.revealPersonality && s.personality ? personalityInfo(s.personality).label : null,
+        mission: missionInfo,
+        online: s.online,
+        replayAvailable: replayOk,
+        isReplay: s.replay,
+      });
+    }, 900);
+  };
+  if (s.replay || s.tutorial) return finish(hasReplay());
+  const log = s.relay.log.filter((c) => c.tick <= st.tick);
+  saveReplay({ v: 1, config: st.config, log, endTick: st.tick, winner: st.winner, names, savedAt: Date.now() })
+    .then((ok) => finish(ok))
+    .catch(() => finish(false));
+}
+
+// ---------------------------------------------------------------- campaign
+let mission: { index: number; memo: MissionMemo; failText?: string; sent: boolean } | null = null;
+
+function startMission(i: number) {
+  const m = MISSIONS[i];
+  if (!m) return toMenu();
+  startGame(
+    m.difficulty,
+    {
+      scenario: m.scenario,
+      peaceTicks: m.peaceTicks ?? 0,
+      passiveBot: !!m.passive,
+      ...(m.personality ? { personality: m.personality } : {}),
+      ...(m.aggression !== undefined ? { aggression: m.aggression } : {}),
+      ...(m.maxAge !== undefined ? { maxAge: m.maxAge } : {}),
+    },
+    {},
+  );
+  mission = { index: i, memo: {}, sent: false };
+  const s = session!;
+  s.onTick((ss) => {
+    if (!mission || mission.sent || ss.over) return;
+    const o = MISSIONS[mission.index].check(ss.state, mission.memo);
+    hud.setObjective(o);
+    if (o.done || o.failed) {
+      mission.sent = true;
+      mission.failText = o.failText;
+      ss.submit({ t: 'objective', won: o.done });
+    }
+  });
+  hud.setObjective(m.check(s.state, mission.memo));
+}
+
+// ---------------------------------------------------------------- replay
+let replayData: StoredReplay | null = null;
+
+async function startReplay() {
+  const r = await loadReplay();
+  if (!r) {
+    hud.toast('Kein Replay gespeichert', 'warn', 'alert');
+    return;
+  }
+  replayData = r;
+  setLocalPlayer(0);
+  startGame('normal', { config: r.config, replayLog: r.log, noBot: true }, { names: r.names });
+  session!.speed = 4;
+}
+
+function replaySeek(t: number) {
+  const r = replayData;
+  const cur = session;
+  if (!r || !cur?.replay) return;
+  const speed = cur.speed;
+  const paused = cur.paused;
+  const camX = cam.x;
+  const camY = cam.y;
+  const z = cam.zoom;
+  if (t < cur.state.tick) {
+    startGame('normal', { config: r.config, replayLog: r.log, noBot: true }, { names: r.names });
+  }
+  const s = session!;
+  s.fastForward(Math.max(0, Math.min(t, r.endTick)));
+  s.speed = speed;
+  s.paused = paused;
+  cam.zoom = z;
+  cam.x = camX;
+  cam.y = camY;
+  cam.clamp();
 }
 
 let tutorial: Tutorial | null = null;
@@ -535,6 +740,8 @@ function frame(now: number) {
   if (hud.root.style.display !== 'none') {
     hud.update();
     tutorial?.update(now);
+    if (s.replay) hud.updateReplay(s.state.tick, replayData?.endTick ?? s.replayEnd, s.paused, s.speed);
+    online.frame(now);
     mmTimer -= dt;
     if (mmTimer <= 0) {
       mmTimer = 100;
@@ -546,6 +753,10 @@ function frame(now: number) {
 hud.setVisible(false);
 layout();
 backdrop();
+menus.onlineAvailable = online.available;
+menus.replayAvailable = hasReplay();
 menus.showMenu(true);
 if (params.has('autostart')) startGame((params.get('autostart') as Difficulty) || 'normal');
+if (params.has('mission')) startMission(Number(params.get('mission')) || 0);
+if (DEBUG) (window as unknown as { __cc: unknown }).__cc = { startMission, startReplay, menus, online };
 requestAnimationFrame(frame);
