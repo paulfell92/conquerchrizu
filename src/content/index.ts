@@ -37,8 +37,6 @@ export const RULES = {
   pointLevel3IncomePct: 200,
   pointLevel3UpgradeCost: { food: 0, wood: 300, gold: 150 } as Resources,
   pointLevel3Age: 2 as Age,
-  /** Point towers (`fortifyPoint`): max per player; one per point. */
-  pointTowersPerPlayer: 4,
   /** Mercenaries (`hire`): gold price = (food+wood+gold) * pct/100; then a per-player cooldown. */
   hireCostPct: 150,
   hireCooldownTicks: 45 * S,

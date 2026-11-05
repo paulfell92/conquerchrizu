@@ -210,9 +210,7 @@ export function validate(state: GameState, player: PlayerId, cmd: Command): stri
       const def = BUILDINGS.pointtower;
       if (pointTowerOn(state, pt.id)) return 'Punkt ist bereits befestigt';
       if (p.age < def.age) return ageReason(def.age);
-      if (buildingCount(state, player, 'pointtower') >= RULES.pointTowersPerPlayer) {
-        return `Maximal ${RULES.pointTowersPerPlayer}× ${def.name}`;
-      }
+      if (buildingCount(state, player, 'pointtower') >= def.maxPerPlayer) return `Maximal ${def.maxPerPlayer}× ${def.name}`;
       return lackReason(p.res, def.cost);
     }
     case 'hire': {
