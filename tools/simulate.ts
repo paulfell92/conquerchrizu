@@ -16,6 +16,7 @@
  *   --quiet            no per-game lines
  *   --peace SEC        peace phase in seconds (default 180)
  *   --no-handicap      don't apply difficultyIncomePct
+ *   --agg-a / --agg-b X  BotOptions.aggression for A / B (default 1)
  *   --trace            print a per-30s timeline (VP, points, army, age, stance) per game
  *   --max-minutes M    abort a game after M minutes of game time (default: rules hard cap + 1)
  *
@@ -49,6 +50,8 @@ const diffA = arg('a', 'normal') as Difficulty;
 const diffB = arg('b', 'normal') as Difficulty;
 const persA = arg('pa', 'random')!;
 const persB = arg('pb', 'random')!;
+const aggA = Number(arg('agg-a', '1'));
+const aggB = Number(arg('agg-b', '1'));
 const baseSeed = Number(arg('seed', '1'));
 const mapId = arg('map', Object.keys(content.MAPS)[0])!;
 const json = has('json');
@@ -120,6 +123,8 @@ interface GameResult {
   rejectedA: number;
   rejectedB: number;
   botMsPerTick: number;
+  sinksA: Record<string, number>;
+  sinksB: Record<string, number>;
 }
 
 function pickPers(p: string, seed: number): Personality {
@@ -148,8 +153,8 @@ function runGame(g: number): GameResult {
   });
   const relay = new LocalRelay(state, 1_000_000);
   const bots: Bot[] = [];
-  bots[sideA] = new Bot({ player: sideA, difficulty: diffA, personality: pA, seed: seed * 2 + 1 });
-  bots[1 - sideA] = new Bot({ player: (1 - sideA) as PlayerId, difficulty: diffB, personality: pB, seed: seed * 2 + 2 });
+  bots[sideA] = new Bot({ player: sideA, difficulty: diffA, personality: pA, seed: seed * 2 + 1, aggression: aggA });
+  bots[1 - sideA] = new Bot({ player: (1 - sideA) as PlayerId, difficulty: diffB, personality: pB, seed: seed * 2 + 2, aggression: aggB });
   let botMs = 0;
   let ticks = 0;
   while (state.winner === null && state.tick < maxTicks) {
@@ -208,6 +213,8 @@ function runGame(g: number): GameResult {
     rejectedA: dA.rejectedBySim,
     rejectedB: dB.rejectedBySim,
     botMsPerTick: botMs / Math.max(1, ticks) / 2,
+    sinksA: { ...bots[sideA].debug.sinks },
+    sinksB: { ...bots[1 - sideA].debug.sinks },
   };
 }
 
@@ -287,6 +294,12 @@ const summary = {
   avgRejectedB: avg((r) => r.rejectedB),
   botMsPerTick: Math.round(1000 * avg((r) => r.botMsPerTick * 10) / 10) / 1000,
   wallSeconds: Math.round(wallMs / 100) / 10,
+  /** Average uses per bot per game of each sink (both sides pooled). */
+  sinksPerGame: (() => {
+    const tot: Record<string, number> = {};
+    for (const r of results) for (const side of [r.sinksA, r.sinksB]) for (const [k, x] of Object.entries(side)) tot[k] = (tot[k] ?? 0) + x;
+    return Object.fromEntries(Object.entries(tot).map(([k, x]) => [k, Math.round((100 * x) / Math.max(1, 2 * n)) / 100]));
+  })(),
 };
 
 if (json) {
@@ -307,4 +320,5 @@ if (json) {
   console.log(`squads     trained A ${summary.avgTrainedA} B ${summary.avgTrainedB}   killed A ${summary.avgKilledA} B ${summary.avgKilledB}`);
   console.log(`commands   A ${summary.avgCommandsA} B ${summary.avgCommandsB}   sim-rejected A ${summary.avgRejectedA} B ${summary.avgRejectedB}`);
   console.log(`bot cost   ${summary.botMsPerTick} ms per bot per tick`);
+  console.log('sinks/bot/game', Object.entries(summary.sinksPerGame).map(([k, x]) => `${k} ${x}`).join('   '));
 }

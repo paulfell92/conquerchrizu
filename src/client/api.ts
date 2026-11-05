@@ -35,7 +35,11 @@ export interface SimApi {
   unitCost(state: GameState, player: PlayerId, kind: UnitKind): Resources;
   buildingCost(state: GameState, player: PlayerId, kind: BuildingKind): Resources;
   techCost(state: GameState, player: PlayerId, tech: TechId): Resources;
+  isPeace(state: GameState): boolean;
+  peaceTicksLeft(state: GameState): number;
 }
+
+const peaceLeftLocal = (s: GameState) => Math.max(0, (s.config.peaceTicks ?? 0) - s.tick);
 
 const realApi: SimApi = {
   real: true,
@@ -49,6 +53,8 @@ const realApi: SimApi = {
   unitCost: sim.unitCost,
   buildingCost: sim.buildingCost,
   techCost: sim.techCost,
+  isPeace: (s) => ((sim as { isPeace?: (s: GameState) => boolean }).isPeace ?? ((x: GameState) => peaceLeftLocal(x) > 0))(s),
+  peaceTicksLeft: (s) => ((sim as { peaceTicksLeft?: (s: GameState) => number }).peaceTicksLeft ?? peaceLeftLocal)(s),
 };
 
 /** Relay with the same contract as LocalRelay but stepping the fixture sim. */
@@ -84,6 +90,8 @@ const fixtureApi: SimApi = {
   unitCost: (_s, _p, k) => UNITS[k].cost,
   buildingCost: (_s, _p, k) => BUILDINGS[k].cost,
   techCost: (_s, _p, t) => TECHS[t].cost,
+  isPeace: (s) => peaceLeftLocal(s) > 0,
+  peaceTicksLeft: peaceLeftLocal,
 };
 
 let chosen: SimApi | null = null;

@@ -4,6 +4,7 @@ import type { Difficulty } from '../../bot';
 import { formatClock } from '../util';
 import { svgIcon } from '../icons';
 import { HUMAN, CPU } from '../session';
+import { prefs, PEACE_OPTIONS, type PeaceMin } from '../prefs';
 
 const DIFF: { id: Difficulty; label: string }[] = [
   { id: 'easy', label: 'Leicht' },
@@ -19,12 +20,13 @@ const SHIELD = `<svg class="shield" viewBox="0 0 58 68" aria-hidden="true">
   <path d="M40 40 L18 18 M22 17 L16.5 16.5 L17 22 M41 36 L36 41" stroke="#f3e8cc" stroke-width="3" fill="none" stroke-linecap="round"/>
 </svg>`;
 
-const REASON: Record<WinReason, [string, string]> = {
+const REASON: Partial<Record<WinReason, [string, string]>> & Record<string, [string, string]> = {
   // [win text, lose text]
   towncenter: ['Das gegnerische Dorfzentrum ist gefallen.', 'Dein Dorfzentrum wurde zerstört.'],
   vp: ['Die CPU hat keine Siegpunkte mehr.', 'Deine Siegpunkte sind aufgebraucht.'],
   timeout: ['Zeit abgelaufen – du hattest mehr Siegpunkte.', 'Zeit abgelaufen – die CPU hatte mehr Siegpunkte.'],
   surrender: ['Die CPU hat aufgegeben.', 'Du hast aufgegeben.'],
+  objective: ['Auftrag erfüllt.', 'Auftrag gescheitert.'],
 };
 
 export class Menus {
@@ -32,17 +34,14 @@ export class Menus {
   private pause: HTMLElement;
   private end: HTMLElement;
   difficulty: Difficulty = 'normal';
+  peaceMin: PeaceMin = 3;
 
   constructor(
     parent: HTMLElement,
-    private h: { start(d: Difficulty): void; resume(): void; surrender(): void; toMenu(): void },
+    private h: { start(d: Difficulty, peaceMin: number): void; tutorial(): void; resume(): void; surrender(): void; toMenu(): void },
   ) {
-    try {
-      const d = localStorage.getItem('cc.difficulty') as Difficulty | null;
-      if (d && DIFF.some((x) => x.id === d)) this.difficulty = d;
-    } catch {
-      /* storage blocked */
-    }
+    this.difficulty = prefs.difficulty;
+    this.peaceMin = prefs.peaceMin;
     this.menu = document.createElement('div');
     this.menu.id = 'menu';
     this.menu.className = 'overlay';
@@ -54,31 +53,45 @@ export class Menus {
           <p class="lede">Zwei Burgen, ein Tal, dreizehn Dörfer, Wälder und Minen. Wer das Land hält, gewinnt.</p>
         </div>
         <div class="box panel">
-          <h2>Schwierigkeit</h2>
-          <div class="seg" role="radiogroup">${DIFF.map((d) => `<button data-d="${d.id}" role="radio">${d.label}</button>`).join('')}</div>
-          <button class="btn primary" id="startbtn">${svgIcon('play')}Spiel starten</button>
+          <div id="firsttime" class="first hidden">
+            <span>Erstes Mal hier?</span>
+            <button class="btn small" data-a="tut">${svgIcon('play')}Tutorial starten</button>
+          </div>
+          <div class="opt"><h2>Schwierigkeit</h2>
+            <div class="seg" id="seg-d" role="radiogroup" aria-label="Schwierigkeit">${DIFF.map((d) => `<button data-d="${d.id}" role="radio">${d.label}</button>`).join('')}</div></div>
+          <div class="opt"><h2>Friedenszeit</h2>
+            <div class="seg seg4" id="seg-p" role="radiogroup" aria-label="Friedenszeit">${PEACE_OPTIONS.map((m) => `<button data-p="${m}" role="radio">${m ? m + ' Min' : 'Aus'}</button>`).join('')}</div></div>
+          <div class="row2">
+            <button class="btn primary" id="startbtn">${svgIcon('play')}Spiel starten</button>
+            <button class="btn" id="tutbtn">Tutorial</button>
+          </div>
           <ol class="howto">
-            <li><b>Trupps wählen:</b> Antippen oder unten in der Leiste. Boden tippen = marschieren, Gegner tippen = angreifen.</li>
-            <li><b>Punkte erobern:</b> Stell dich in den Kreis von Dorf, Wald oder Mine – sie bringen Nahrung, Holz und Gold.</li>
-            <li><b>Basis ausbauen:</b> Tippe auf einen freien Bauplatz neben dem Dorfzentrum und bilde neue Trupps aus.</li>
+            <li><b>Antippen wählt aus:</b> Trupps, Gebäude, Bauplätze und Punkte. Unten in der Leiste findest du alle Trupps.</li>
+            <li><b>Doppeltippen gibt den Befehl:</b> auf den Boden = marschieren, auf einen Gegner = angreifen, auf Dorf, Wald oder Mine = erobern.</li>
+            <li><b>Basis ausbauen:</b> Freien Bauplatz antippen, Gebäude wählen, dann Trupps ausbilden.</li>
             <li><b>Sieg:</b> Wer weniger Punkte hält, verliert Siegpunkte. Fällt dein Dorfzentrum, ist das Spiel vorbei.</li>
           </ol>
-          <div class="foot">Ziehen = Karte bewegen · Zwei Finger = Zoom</div>
+          <div class="foot">Ziehen = Karte bewegen · Zwei Finger = Zoom · Maus: Rechtsklick = Befehl</div>
         </div>
       </div>`;
     parent.appendChild(this.menu);
-    this.menu.querySelectorAll<HTMLButtonElement>('.seg button').forEach((b) =>
+    this.menu.querySelectorAll<HTMLButtonElement>('#seg-d button').forEach((b) =>
       b.addEventListener('click', () => {
         this.difficulty = b.dataset.d as Difficulty;
-        try {
-          localStorage.setItem('cc.difficulty', this.difficulty);
-        } catch {
-          /* ignore */
-        }
+        prefs.difficulty = this.difficulty;
         this.syncSeg();
       }),
     );
-    this.menu.querySelector('#startbtn')!.addEventListener('click', () => h.start(this.difficulty));
+    this.menu.querySelectorAll<HTMLButtonElement>('#seg-p button').forEach((b) =>
+      b.addEventListener('click', () => {
+        this.peaceMin = Number(b.dataset.p) as PeaceMin;
+        prefs.peaceMin = this.peaceMin;
+        this.syncSeg();
+      }),
+    );
+    this.menu.querySelector('#startbtn')!.addEventListener('click', () => h.start(this.difficulty, this.peaceMin));
+    this.menu.querySelector('#tutbtn')!.addEventListener('click', () => h.tutorial());
+    this.menu.querySelector('#firsttime [data-a="tut"]')!.addEventListener('click', () => h.tutorial());
     this.syncSeg();
 
     this.pause = document.createElement('div');
@@ -110,7 +123,7 @@ export class Menus {
 
   private syncSeg() {
     this.menu.querySelectorAll<HTMLButtonElement>('.seg button').forEach((b) => {
-      const on = b.dataset.d === this.difficulty;
+      const on = b.dataset.d !== undefined ? b.dataset.d === this.difficulty : Number(b.dataset.p) === this.peaceMin;
       b.classList.toggle('on', on);
       b.setAttribute('aria-checked', String(on));
     });
@@ -118,6 +131,7 @@ export class Menus {
 
   showMenu(v: boolean) {
     this.menu.classList.toggle('hidden', !v);
+    this.menu.querySelector('#firsttime')!.classList.toggle('hidden', prefs.tutorialSeen);
     if (v) (this.menu.querySelector('#startbtn') as HTMLElement).focus({ preventScroll: true });
   }
   showPause(v: boolean) {
@@ -135,7 +149,7 @@ export class Menus {
     const win = st.winner === HUMAN;
     const draw = st.winner === -1;
     const reason = st.winReason ?? 'timeout';
-    const txt = draw ? 'Zeit abgelaufen – beide Seiten haben gleich viele Siegpunkte.' : REASON[reason][win ? 0 : 1];
+    const txt = draw ? 'Zeit abgelaufen – beide Seiten haben gleich viele Siegpunkte.' : (REASON[reason] ?? ['Gewonnen.', 'Verloren.'])[win ? 0 : 1];
     const a = st.players[HUMAN];
     const b = st.players[CPU];
     const pts = [0, 0];

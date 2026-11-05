@@ -79,3 +79,10 @@ export function drawIcon(
   ctx.stroke(iconPath(name));
   ctx.restore();
 }
+
+/** Icon for any entity kind; unknown kinds (newer content) fall back to a neutral glyph. */
+export function iconFor(kind: string): IconName {
+  if (kind in ICONS) return kind as IconName;
+  if (kind === 'pointtower') return 'tower';
+  return 'hammer';
+}

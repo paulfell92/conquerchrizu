@@ -151,3 +151,10 @@ export const PERSONALITIES: Record<Personality, PersonalityDef> = {
 };
 
 export const PERSONALITY_LIST: Personality[] = ['rusher', 'boomer', 'turtle'];
+
+/** UI picker data (German). 'random' is handled by the client. */
+export const PERSONALITY_INFO: Record<Personality, { label: string; desc: string }> = {
+  rusher: { label: 'Stürmer', desc: 'Greift früh an und drückt auf die Mitte.' },
+  boomer: { label: 'Wirtschafter', desc: 'Baut Punkte und Wirtschaft aus, kommt später mit Rittern.' },
+  turtle: { label: 'Verteidiger', desc: 'Befestigt Punkte, baut Türme und kontert.' },
+};

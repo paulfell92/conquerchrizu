@@ -6,6 +6,7 @@
 import type { Building, BuildingKind, Command, GameEvent, GameState, PlayerId, Squad } from '../sim/types';
 import { TICK_RATE } from '../sim/types';
 import type { Relay } from '../net/localRelay';
+import * as botModule from '../bot';
 import { Bot, type Difficulty } from '../bot';
 import { getApi, type SimApi } from './api';
 
@@ -27,7 +28,7 @@ export interface Remembered {
 
 /** Cosmetic effect record (pooled). */
 export interface Fx {
-  kind: 0 | 1 | 2 | 3; // 0 arrow, 1 melee spark, 2 death puff, 3 move marker
+  kind: 0 | 1 | 2 | 3 | 4 | 5; // 0 arrow, 1 melee spark, 2 death puff, 3 move marker, 4 command line, 5 tap ripple (screen px)
   x0: number;
   y0: number;
   x1: number;
@@ -37,6 +38,25 @@ export interface Fx {
   color: string;
   big: boolean;
   active: boolean;
+}
+
+export interface SessionOptions {
+  peaceTicks?: number;
+  passiveBot?: boolean;
+  tutorial?: boolean;
+}
+
+const FALLBACK_INCOME: Record<Difficulty, number> = { easy: 80, normal: 100, hard: 110 };
+/** Bot income handicap from the bot module, with a local fallback if it is missing. */
+export function botIncomePct(d: Difficulty): number {
+  const fn = (botModule as unknown as { difficultyIncomePct?: (d: Difficulty) => number }).difficultyIncomePct;
+  try {
+    const v = fn ? fn(d) : NaN;
+    if (Number.isFinite(v) && v > 0) return Math.round(v);
+  } catch {
+    /* ignore */
+  }
+  return FALLBACK_INCOME[d];
 }
 
 export type SessionListener = (ev: GameEvent, s: Session) => void;
@@ -79,20 +99,25 @@ export class Session {
   /** Last tick each squad/building was hit (for flash). */
   readonly lastHit = new Map<number, number>();
 
-  constructor(difficulty: Difficulty, seed: number) {
+  readonly tutorial: boolean;
+
+  constructor(difficulty: Difficulty, seed: number, opts: SessionOptions = {}) {
     this.api = getApi();
     this.difficulty = difficulty;
+    this.tutorial = !!opts.tutorial;
     this.state = this.api.createGame({
       seed,
       mapId: 'chrizu-tal',
       players: [
-        { name: 'Du', color: COLORS[0], isBot: false },
-        { name: 'CPU', color: COLORS[1], isBot: true },
+        { name: 'Du', color: COLORS[0], isBot: false, incomePct: 100 },
+        { name: 'CPU', color: COLORS[1], isBot: true, incomePct: botIncomePct(difficulty) },
       ],
+      peaceTicks: Math.max(0, Math.round(opts.peaceTicks ?? 0)),
     });
     this.relay = this.api.makeRelay(this.state);
     try {
-      this.bot = new Bot({ player: CPU, difficulty, seed: seed ^ 0x5bd1e995 });
+      const botOpts = { player: CPU, difficulty, seed: seed ^ 0x5bd1e995, passive: !!opts.passiveBot };
+      this.bot = new Bot(botOpts);
     } catch (e) {
       console.warn('[client] Bot konnte nicht erstellt werden', e);
       this.bot = null;
@@ -101,7 +126,7 @@ export class Session {
     this.vis = [];
     this.refreshVisibility();
     for (const s of this.state.squads) this.prev.set(s.id, { x: s.x, y: s.y });
-    for (let i = 0; i < 48; i++)
+    for (let i = 0; i < 96; i++)
       this.fx.push({ kind: 0, x0: 0, y0: 0, x1: 0, y1: 0, t0: 0, dur: 0, color: '', big: false, active: false });
   }
 
@@ -111,6 +136,20 @@ export class Session {
 
   get me() {
     return this.state.players[HUMAN];
+  }
+  get peace(): boolean {
+    try {
+      return this.api.isPeace(this.state);
+    } catch {
+      return false;
+    }
+  }
+  get peaceLeft(): number {
+    try {
+      return this.api.peaceTicksLeft(this.state);
+    } catch {
+      return 0;
+    }
   }
   get over() {
     return this.state.winner !== null;

@@ -57,6 +57,8 @@ export class Hud {
   private topSig = '';
   private lastCardTap = { id: -1, t: 0 };
   boxMode = false;
+  /** Set by main from prefs: show the double-tap hint chip. */
+  commandHint = true;
 
   constructor(
     parent: HTMLElement,
@@ -95,9 +97,11 @@ export class Hud {
       <div id="ctx" class="panel hidden"></div>
       <div id="toasts" aria-live="polite"></div>
       <div id="modehint" class="panel hidden"><span></span><button>Abbrechen</button></div>
+      <div id="peace" class="panel hidden">${svgIcon('flag')}<span></span></div>
+      <div id="cmdhint" class="hidden">${svgIcon('target')}<span>Doppeltippen = Befehl</span></div>
     `;
     parent.appendChild(this.root);
-    for (const id of ['res', 'vp', 'speed', 'pause', 'cards', 'ctx', 'toasts', 'modehint', 't-box', 't-army', 't-home'])
+    for (const id of ['res', 'vp', 'speed', 'pause', 'cards', 'ctx', 'toasts', 'modehint', 'peace', 'cmdhint', 't-box', 't-army', 't-home'])
       this.els[id] = this.root.querySelector('#' + id)!;
     this.mm = this.root.querySelector('#minimap')!;
 
@@ -210,6 +214,23 @@ export class Hud {
     const cpu = st.players[CPU];
     const pts = [0, 0];
     for (const p of st.points) if (p.owner >= 0) pts[p.owner]++;
+    // peace countdown chip + command hint (cheap, update every frame)
+    const left = s.peaceLeft;
+    const pc = this.els.peace;
+    if (left > 0) {
+      const txt = `Friedenszeit ${formatClock(left + 19)}`;
+      if (pc.classList.contains('hidden')) {
+        pc.classList.remove('hidden');
+        document.body.classList.add('has-peace');
+      }
+      const sp = pc.querySelector('span')!;
+      if (sp.textContent !== txt) sp.textContent = txt;
+    } else if (!pc.classList.contains('hidden')) {
+      pc.classList.add('hidden');
+      document.body.classList.remove('has-peace');
+    }
+    const showHint = this.commandHint && s.selected.size > 0 && s.mode === 'none';
+    this.els.cmdhint.classList.toggle('hidden', !showHint);
     const sig = `${me.res.food}|${me.res.wood}|${me.res.gold}|${me.pop}|${me.popCap}|${me.vp}|${cpu.vp}|${pts}|${me.age}|${Math.floor(st.tick / 20)}|${s.speed}|${s.paused}`;
     if (sig === this.topSig) return;
     this.topSig = sig;
@@ -370,14 +391,14 @@ export class Hud {
         <div class="hpline"><i style="width:${hpPct}%;background:${hpPct > 60 ? 'var(--good)' : hpPct > 30 ? 'var(--warn)' : 'var(--bad)'}"></i></div>
         ${detail}
         <div class="grid">
-          ${this.actBtn('attack', '', 'target', 'Angriff', null, null, me.res, s.mode === 'attack' ? 'hot' : '')}
+          ${this.actBtn('attack', '', 'target', 'Angriff', null, s.peace ? 'Friedenszeit' : null, me.res, s.mode === 'attack' ? 'hot' : '')}
           ${this.actBtn('stop', '', 'stop', 'Stopp', null, null, me.res)}
           ${this.actBtn('retreat', '', 'retreat', 'Rückzug', null, null, me.res)}
           ${this.actBtn('army', '', 'army', 'Ganze Armee', null, null, me.res)}
         </div>
-        <div class="note">Tippe auf den Boden zum Bewegen, auf einen Gegner zum Angreifen, auf einen Punkt zum Einnehmen.</div>
+        <div class="note">Doppeltippen: auf den Boden = marschieren, auf einen Gegner = angreifen, auf einen Punkt = einnehmen. Einmal tippen wählt nur aus.</div>
       </div>`;
-      return { sig: `sq|${[...s.selected].join(',')}|${hpPct}|${list.length === 1 ? list[0].order + list[0].members : men}|${s.mode}`, html };
+      return { sig: `sq|${[...s.selected].join(',')}|${hpPct}|${list.length === 1 ? list[0].order + list[0].members : men}|${s.mode}|${s.peace}`, html };
     }
 
     // --- own building
@@ -421,7 +442,7 @@ export class Hud {
         const why = s.validate({ t: 'upgradePoint', point: p.id });
         body += `<div class="grid">${this.actBtn('upgrade', `data-p="${p.id}"`, 'upgrade', 'Ausbauen (+50 %)', RULES.pointUpgradeCost, why, me.res, 'wide')}</div>`;
       } else if (p.owner !== HUMAN) {
-        body += `<div class="note">Wähle Trupps und tippe auf den Punkt. Steht nur deine Seite im Kreis, gehört er bald dir.</div>`;
+        body += `<div class="note">Wähle Trupps und tippe doppelt auf den Punkt. Steht nur deine Seite im Kreis, gehört er bald dir.</div>`;
       } else body += `<div class="note">Voll ausgebaut. Wird der Punkt erobert, geht der Ausbau verloren.</div>`;
       const html = `${this.head(p.kind as IconName, col, p.name, `${POINT_NAMES[p.kind]} · ${ownerTxt}`)}<div class="body">${body}</div>`;
       return { sig: `pt|${p.id}|${p.owner}|${p.level}|${Math.round(p.progress / 5)}|${resSig}`, html };
@@ -439,8 +460,8 @@ export class Hud {
       const html = `${this.head((q ? q.kind : b!.kind) as IconName, st.players[CPU].color, name, q ? `CPU · ${q.members} Mann` : 'CPU')}
         <div class="body"><div class="hpline"><i style="width:${pct}%;background:var(--bad)"></i></div>
         <div class="note">${esc(desc)}</div>
-        <div class="note">Wähle eigene Trupps und tippe auf diesen Gegner, um anzugreifen.</div></div>`;
-      return { sig: `en|${e.id}|${pct}`, html };
+        <div class="note">${s.peace ? 'Friedenszeit: Angriffe sind noch nicht möglich.' : 'Wähle eigene Trupps und tippe doppelt auf diesen Gegner, um anzugreifen.'}</div></div>`;
+      return { sig: `en|${e.id}|${pct}|${s.peace}`, html };
     }
     return null;
   }

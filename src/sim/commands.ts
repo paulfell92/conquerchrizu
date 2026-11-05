@@ -3,10 +3,10 @@
  * command application.
  */
 import { BUILDINGS, RESOURCE_NAMES, RULES, TECHS, UNITS, AGE_NAMES } from '../content';
-import type { Age, Building, Command, GameState, PlayerId, Resources, Squad, Vec } from './types';
-import { TILE } from './types';
-import { inPeace, findBuilding, findSquad, completedNonTcBuildings, buildingCount, getTownCenter, enemyOf, reject, emit } from './world';
-import { mapOf, newBuilding, slotPos } from './init';
+import type { Age, Building, Command, GameState, PlayerId, Resources, Squad, UnitKind, Vec, WinReason } from './types';
+import { TICK_RATE, TILE } from './types';
+import { inPeace, findBuilding, findSquad, completedBaseBuildings, buildingCount, getTownCenter, enemyOf, reject, emit, bodyRadius } from './world';
+import { mapOf, newBuilding, newSquad, slotPos } from './init';
 import { findPath, nearestWalkable } from './pathfinding';
 import { isqrt } from './fixed';
 
@@ -81,6 +81,34 @@ function techQueuedOrDone(state: GameState, player: PlayerId, tech: string): 'do
   return null;
 }
 
+/** Cost of the next upgrade of a point at `level` (1 -> 2 or 2 -> 3). */
+export function pointUpgradeCostFor(level: number): Resources {
+  return level >= 2 ? RULES.pointLevel3UpgradeCost : RULES.pointUpgradeCost;
+}
+
+/** Mercenary price: (food + wood + gold) * hireCostPct %, paid in gold only. */
+export function hirePrice(kind: UnitKind): Resources {
+  const c = UNITS[kind].cost;
+  return { food: 0, wood: 0, gold: Math.trunc(((c.food + c.wood + c.gold) * RULES.hireCostPct) / 100) };
+}
+
+export function pointTowerOn(state: GameState, pointId: number): Building | null {
+  for (const b of state.buildings) if (b.kind === 'pointtower' && b.point === pointId) return b;
+  return null;
+}
+
+/** Buildings that train units (their rally is set by rallyAll). */
+export function trainsUnits(b: Building): boolean {
+  return BUILDINGS[b.kind].trains.length > 0;
+}
+
+function clockShort(ticks: number): string {
+  const s = Math.ceil(ticks / TICK_RATE);
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r < 10 ? '0' : ''}${r}`;
+}
+
 export function validate(state: GameState, player: PlayerId, cmd: Command): string | null {
   if (state.winner !== null) return 'Spiel ist vorbei';
   if (player !== 0 && player !== 1) return 'Ungültiger Spieler';
@@ -114,6 +142,7 @@ export function validate(state: GameState, player: PlayerId, cmd: Command): stri
       if (!isInt(cmd.slot) || cmd.slot < 0 || cmd.slot > 7) return 'Ungültiger Bauplatz';
       const def = BUILDINGS[cmd.kind];
       if (!def || cmd.kind === 'towncenter') return 'Ungültiges Gebäude';
+      if (cmd.kind === 'pointtower') return 'Wachtürme werden auf Punkten gebaut';
       for (const b of state.buildings) if (b.owner === player && b.slot === cmd.slot) return 'Bauplatz belegt';
       if (p.age < def.age) return ageReason(def.age);
       if (buildingCount(state, player, cmd.kind) >= def.maxPerPlayer) return `Maximal ${def.maxPerPlayer}× ${def.name}`;
@@ -140,7 +169,7 @@ export function validate(state: GameState, player: PlayerId, cmd: Command): stri
       if (p.age < t.age) return ageReason(t.age);
       if (cmd.tech === 'age2' && p.age >= 2) return 'Bereits erforscht';
       if (cmd.tech === 'age3' && p.age >= 3) return 'Bereits erforscht';
-      if (t.requiresBuildings > 0 && completedNonTcBuildings(state, player) < t.requiresBuildings) {
+      if (t.requiresBuildings > 0 && completedBaseBuildings(state, player) < t.requiresBuildings) {
         return `Benötigt ${t.requiresBuildings} fertige Gebäude`;
       }
       if (b.queue.length >= RULES.queueMax) return 'Warteschlange voll';
@@ -165,9 +194,42 @@ export function validate(state: GameState, player: PlayerId, cmd: Command): stri
       const pt = state.points.find((q) => q.id === cmd.point);
       if (!pt) return 'Ungültiger Punkt';
       if (pt.owner !== player) return 'Punkt gehört dir nicht';
-      if (pt.level >= 2) return 'Bereits ausgebaut';
-      return lackReason(p.res, RULES.pointUpgradeCost);
+      if (pt.level >= 3) return 'Bereits voll ausgebaut';
+      if (pt.level === 2 && p.age < RULES.pointLevel3Age) return ageReason(RULES.pointLevel3Age);
+      return lackReason(p.res, pointUpgradeCostFor(pt.level));
     }
+    case 'rallyAll': {
+      if (!inMap(state, cmd.x, cmd.y)) return 'Ziel außerhalb der Karte';
+      return null;
+    }
+    case 'fortifyPoint': {
+      if (!isInt(cmd.point)) return 'Ungültiger Punkt';
+      const pt = state.points.find((q) => q.id === cmd.point);
+      if (!pt) return 'Ungültiger Punkt';
+      if (pt.owner !== player) return 'Punkt gehört dir nicht';
+      const def = BUILDINGS.pointtower;
+      if (pointTowerOn(state, pt.id)) return 'Punkt ist bereits befestigt';
+      if (p.age < def.age) return ageReason(def.age);
+      if (buildingCount(state, player, 'pointtower') >= RULES.pointTowersPerPlayer) {
+        return `Maximal ${RULES.pointTowersPerPlayer}× ${def.name}`;
+      }
+      return lackReason(p.res, def.cost);
+    }
+    case 'hire': {
+      const u = UNITS[cmd.unit];
+      if (!u) return 'Ungültige Einheit';
+      if (!getTownCenter(state, player)) return 'Kein Dorfzentrum';
+      if (p.age < RULES.hireMinAge) return ageReason(RULES.hireMinAge);
+      if (p.age < u.age) return ageReason(u.age);
+      const ready = p.hireReadyTick ?? 0;
+      if (state.tick < ready) return `Söldner erst wieder in ${clockShort(ready - state.tick)}`;
+      if (p.pop + u.pop > p.popCap) return 'Bevölkerungslimit erreicht';
+      return lackReason(p.res, hirePrice(cmd.unit));
+    }
+    case 'objective':
+      if (typeof cmd.won !== 'boolean') return 'Ungültiger Befehl';
+      if (!state.config.scenario) return 'Nur in Missionen';
+      return null;
     case 'surrender':
       return null;
     default:
@@ -346,8 +408,38 @@ export function applyCommand(state: GameState, player: PlayerId, cmd: Command): 
     }
     case 'upgradePoint': {
       const pt = state.points.find((q) => q.id === cmd.point)!;
-      pay(p.res, RULES.pointUpgradeCost);
-      pt.level = 2;
+      pay(p.res, pointUpgradeCostFor(pt.level));
+      pt.level = pt.level === 1 ? 2 : 3;
+      return;
+    }
+    case 'rallyAll': {
+      const r = nearestWalkable(state, Math.trunc(cmd.x), Math.trunc(cmd.y));
+      p.defaultRally = { x: r.x, y: r.y };
+      for (const b of state.buildings) if (b.owner === player && trainsUnits(b)) b.rally = { x: r.x, y: r.y };
+      return;
+    }
+    case 'fortifyPoint': {
+      const pt = state.points.find((q) => q.id === cmd.point)!;
+      pay(p.res, BUILDINGS.pointtower.cost);
+      const b = newBuilding(state, player, 'pointtower', -2, pt.x, pt.y, false);
+      b.point = pt.id;
+      return;
+    }
+    case 'hire': {
+      pay(p.res, hirePrice(cmd.unit));
+      p.pop += UNITS[cmd.unit].pop;
+      p.hireReadyTick = state.tick + RULES.hireCooldownTicks;
+      const tc = getTownCenter(state, player)!;
+      const pos = spawnNear(state, tc, p.defaultRally ?? tc.rally);
+      const s = newSquad(state, player, cmd.unit, pos.x, pos.y);
+      p.stats.squadsTrained++;
+      emit(state, { t: 'trained', squad: s.id, owner: player });
+      const rally = tc.rally ?? p.defaultRally ?? null;
+      if (rally) orderMove(state, s, rally, 'move');
+      return;
+    }
+    case 'objective': {
+      endGame(state, cmd.won ? player : enemyOf(player), 'objective');
       return;
     }
     case 'surrender': {
@@ -358,7 +450,28 @@ export function applyCommand(state: GameState, player: PlayerId, cmd: Command): 
   }
 }
 
-export function endGame(state: GameState, winner: PlayerId | -1, reason: 'towncenter' | 'vp' | 'timeout' | 'surrender'): void {
+/** Spawn position next to a building, toward `toward` (or the enemy side). Mirror-symmetric. */
+export function spawnNear(state: GameState, b: Building, toward: Vec | null): Vec {
+  const r = bodyRadius(b) + RULES.squadRadius + 300;
+  let dx: number;
+  let dy: number;
+  if (toward) {
+    dx = toward.x - b.x;
+    dy = toward.y - b.y;
+  } else if (b.kind === 'towncenter') {
+    dx = b.owner === 0 ? 1 : -1;
+    dy = 0;
+  } else {
+    const tc = getTownCenter(state, b.owner);
+    dx = tc ? b.x - tc.x : b.owner === 0 ? 1 : -1;
+    dy = tc ? b.y - tc.y : 0;
+  }
+  const d = isqrt(dx * dx + dy * dy);
+  if (d === 0) return nearestWalkable(state, b.x + (b.owner === 0 ? r : -r), b.y);
+  return nearestWalkable(state, b.x + Math.trunc((dx * r) / d), b.y + Math.trunc((dy * r) / d));
+}
+
+export function endGame(state: GameState, winner: PlayerId | -1, reason: WinReason): void {
   if (state.winner !== null) return;
   state.winner = winner;
   state.winReason = reason;
