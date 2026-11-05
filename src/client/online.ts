@@ -48,6 +48,7 @@ export class OnlineController {
     try {
       const c = NetClient.connect(relayUrl(), { name: 'Spieler' });
       c.onLobby = (info) => {
+        saveSeat({ code: info.code, token: info.token, at: Date.now() });
         if (!this.inGame) this.d.menus().setOnline({ phase: 'waiting', code: info.code, ping: this.ping });
       };
       c.onStart = (info) => {
@@ -70,6 +71,7 @@ export class OnlineController {
         this.desynced = true;
       };
       c.onEnd = (reason) => {
+        clearSeat();
         if (reason === 'abandoned' && !this.d.session()?.over) this.d.hud().toast('Gegner hat das Spiel verlassen', 'warn', 'alert');
       };
       c.onError = (reason, fatal) => {
@@ -116,8 +118,27 @@ export class OnlineController {
     this.leave();
   }
 
+  /** After a page reload: re-enter a running game stored in sessionStorage. */
+  tryRejoin(): boolean {
+    const seat = loadSeat();
+    if (!seat || !this.available) return false;
+    if (Date.now() - seat.at > 30 * 60 * 1000) {
+      clearSeat();
+      return false;
+    }
+    const c = this.connect();
+    if (!c) return false;
+    this.d.menus().setOnline({ phase: 'joining' });
+    c.rejoinLobby(seat.code, seat.token).catch(() => {
+      clearSeat();
+      if (this.client === c && !this.inGame) this.d.menus().setOnline({ phase: 'idle' });
+    });
+    return true;
+  }
+
   /** Close any lobby / connection (menu, new game). */
   leave() {
+    clearSeat();
     try {
       this.client?.close();
     } catch {
@@ -152,7 +173,7 @@ export class OnlineController {
     const hud = this.d.hud();
     // catch up if far behind (tab was hidden, rejoin)
     const r = this.relay;
-    if (r && r.ticksBehind > 8) r.fastForward(r.ticksBehind - 4, 8);
+    if (r && r.ticksBehind > 4) r.fastForward();
     hud.setPing(this.ping);
     if (s.over) {
       hud.setNetOverlay(null);
@@ -183,5 +204,36 @@ export class OnlineController {
       return;
     }
     hud.setNetOverlay(null);
+  }
+}
+
+// ---------------------------------------------------------------- seat for rejoin (sessionStorage)
+interface Seat {
+  code: string;
+  token: string;
+  at: number;
+}
+const SEAT_KEY = 'cc.seat.v1';
+function saveSeat(v: Seat) {
+  try {
+    sessionStorage.setItem(SEAT_KEY, JSON.stringify(v));
+  } catch {
+    /* ignore */
+  }
+}
+function loadSeat(): Seat | null {
+  try {
+    const raw = sessionStorage.getItem(SEAT_KEY);
+    const v = raw ? (JSON.parse(raw) as Seat) : null;
+    return v && typeof v.code === 'string' && typeof v.token === 'string' && typeof v.at === 'number' ? v : null;
+  } catch {
+    return null;
+  }
+}
+function clearSeat() {
+  try {
+    sessionStorage.removeItem(SEAT_KEY);
+  } catch {
+    /* ignore */
   }
 }

@@ -67,6 +67,8 @@ button:focus-visible{outline:2px solid var(--brass);outline-offset:2px}
 .vp .bar i{position:absolute;top:0;bottom:0;border-radius:4px}
 .vp .me .bar i{right:0;background:linear-gradient(90deg,#2f63b8,var(--blue-l))}
 .vp .cpu .bar i{left:0;background:linear-gradient(270deg,#a8322a,var(--red-l))}
+body.p1 .vp .me .bar i{background:linear-gradient(90deg,#a8322a,var(--red-l))}
+body.p1 .vp .cpu .bar i{background:linear-gradient(270deg,#2f63b8,var(--blue-l))}
 .vp .me .lbl{flex-direction:row-reverse}
 .vp .pts{font-size:10.5px;color:var(--muted)}
 .vp .clock{font-family:var(--serif);font-size:17px;font-weight:700;color:var(--parch);font-variant-numeric:tabular-nums;

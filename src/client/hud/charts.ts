@@ -11,12 +11,14 @@ export interface ChartSpec {
   get: (s: StatSample) => [number, number];
   /** Number formatting for the y axis and the end labels. */
   fmt?: (v: number) => string;
+  /** Fixed y-axis maximum (e.g. the number of capture points). */
+  max?: number;
 }
 
 export const CHARTS: ChartSpec[] = [
   { title: 'Siegpunkte', get: (s) => s.vp },
   { title: 'Armeestärke (Leben)', get: (s) => s.army, fmt: kfmt },
-  { title: 'Gehaltene Punkte', get: (s) => s.points },
+  { title: 'Gehaltene Punkte', get: (s) => s.points, max: 13 },
 ];
 
 function kfmt(v: number): string {
@@ -57,7 +59,7 @@ export function drawChart(cv: HTMLCanvasElement, samples: StatSample[], spec: Ch
     if (a > max) max = a;
     if (b > max) max = b;
   }
-  max = niceMax(max);
+  max = spec.max ?? niceMax(max);
   const L = 34;
   const R = 8;
   const T = 6;

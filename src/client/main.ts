@@ -249,7 +249,7 @@ function jumpHome() {
   const s = session;
   if (!s) return;
   const tc = s.api.townCenter(s.state, HUMAN);
-  if (tc) cam.centerOn(tc.x + 4000, tc.y + 500);
+  if (tc) cam.centerOn(tc.x + (HUMAN === 0 ? 4000 : -4000), tc.y + 500);
 }
 
 function setPaused(p: boolean) {
@@ -539,6 +539,7 @@ function startGame(d: Difficulty, opts: SessionOptions = {}, extra: StartExtra =
   hud.meLabel = extra.names?.[HUMAN] ?? 'Du';
   hud.opponentLabel = extra.names?.[1 - HUMAN] ?? (pers && !extra.revealPersonality ? pers : 'CPU');
   hud.setFollow(prefs.followArmy);
+  document.body.classList.toggle('p1', HUMAN === 1);
   hud.setOnline(s.online);
   hud.setReplay(s.replay);
   hud.setObjective(null);
@@ -758,5 +759,6 @@ menus.replayAvailable = hasReplay();
 menus.showMenu(true);
 if (params.has('autostart')) startGame((params.get('autostart') as Difficulty) || 'normal');
 if (params.has('mission')) startMission(Number(params.get('mission')) || 0);
+else if (!params.has('autostart') && online.tryRejoin()) menus.showMenu(true, 'online');
 if (DEBUG) (window as unknown as { __cc: unknown }).__cc = { startMission, startReplay, menus, online };
 requestAnimationFrame(frame);

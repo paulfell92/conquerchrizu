@@ -142,22 +142,20 @@ export const MISSIONS: Mission[] = [
     id: 'm5',
     title: 'Die Schlacht um Chrizu',
     briefing:
-      'Der Verteidiger hat seine Punkte befestigt und wartet hinter Mauern. Ein normales Match gegen die schwerste CPU – gewinne über Siegpunkte oder sein Dorfzentrum.',
-    goal: 'Gewinne das Match gegen die CPU (Schwer).',
-    difficulty: 'hard',
+      'Der Verteidiger hat seine Mine befestigt. Nutze die Friedenszeit zum Aufbau, dann gewinne über Siegpunkte oder sein Dorfzentrum – gegen eine angriffslustige CPU.',
+    goal: 'Gewinne das Match gegen die befestigte CPU.',
+    difficulty: 'normal',
+    aggression: 1.2,
     personality: 'turtle',
-    peaceTicks: 0,
+    // 2:30 Friedenszeit: the defender starts with a fortified mine, so the
+    // player needs time to build up before the VP race starts.
+    peaceTicks: (5 * MIN) / 2,
     scenario: {
-      players: [null, { age: 2 }],
+      players: [{ startRes: { food: 500, wood: 450, gold: 200 } }, null],
       pointOwners: [
-        { name: 'Ostkate', owner: 1 },
         { name: 'Felsmine', owner: 1 },
-        { name: 'Kiefernhain', owner: 1 },
       ],
-      extraBuildings: [
-        { owner: 1, kind: 'pointtower', slot: 0, built: true, point: 'Ostkate' },
-        { owner: 1, kind: 'pointtower', slot: 0, built: true, point: 'Felsmine' },
-      ],
+      extraBuildings: [{ owner: 1, kind: 'pointtower', slot: 0, built: true, point: 'Felsmine' }],
     },
     check(st) {
       // the normal win conditions decide; the tracker just shows the VP race
