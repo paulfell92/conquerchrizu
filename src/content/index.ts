@@ -91,7 +91,7 @@ export const UNITS: Record<UnitKind, UnitDef> = {
     cost: { food: 40, wood: 60, gold: 0 }, trainTicks: 14 * S,
     members: 5, hpPerMember: 35, dmgPerMember: 3, range: 5000, cooldownTicks: 30,
     speed: 75, sight: 7000, pop: 1, ranged: true,
-    bonus: { spear: 150, sword: 130, ram: 40, building: 30 },
+    bonus: { spear: 200, sword: 130, ram: 40, building: 30 },
     description: 'Fernkampf. Schlägt Speerträger.',
   },
   cavalry: {

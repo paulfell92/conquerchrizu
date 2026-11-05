@@ -84,6 +84,12 @@ export interface Squad {
   cooldown: number; // ticks until next attack
   lastCombatTick: number; // last tick it dealt or took damage
   facing: number; // 0..7 octant, only for rendering
+  /**
+   * Sim-internal leash anchor: set when an idle squad auto-acquires (or
+   * retaliates); it walks back here when the chase leads too far. null for
+   * explicit orders. Optional only so hand-built states stay valid.
+   */
+  guard?: Vec | null;
 }
 
 export interface QueueItem {
@@ -182,4 +188,16 @@ export interface GameState {
   events: GameEvent[];
   winner: Owner | null; // null = running, -1 = draw
   winReason: WinReason | null;
+  /**
+   * Sim-internal throttle for 'underAttack' events (last alert tick per player
+   * and 8-tile area). Optional so hand-built states stay valid; sorted by key.
+   */
+  alerts?: AlertMark[];
+}
+
+export interface AlertMark {
+  owner: PlayerId;
+  /** area key = ay * 1000 + ax with ax/ay = position / 8 tiles */
+  area: number;
+  tick: number;
 }
