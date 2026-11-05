@@ -1,0 +1,1 @@
+{"RULES":{"vpLossPerSquadDeath":5,"bountyGoldPctOfCost":10,"vpStart":4500,"vpDrainDoubleAfterTicks":16800},"UNITS":{"scout":{"hpPerMember":90},"spear":{"hpPerMember":90},"archer":{"hpPerMember":70},"cavalry":{"hpPerMember":160},"sword":{"hpPerMember":120},"ram":{"hpPerMember":1000},"knight":{"hpPerMember":280}},"BUILDINGS":{"towncenter":{"hp":12000,"dmg":40}}}
