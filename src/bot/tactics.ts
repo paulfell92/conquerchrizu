@@ -5,7 +5,7 @@
  */
 import { RULES, UNITS } from '../content';
 import type { Squad } from '../sim';
-import { emit } from './brain';
+import { aggressionOk, emit, inPeace, onMyHalf } from './brain';
 import type { Ctx } from './brain';
 import { bonus, dist, matchupPower, TPS } from './view';
 
@@ -27,7 +27,16 @@ function targetValue(s: Squad, t: Squad, focus: boolean): number {
 export function runTactics(ctx: Ctx): void {
   const { b, v } = ctx;
   if (v.enemySquads.length === 0) return;
-  const enemies = v.enemySquads;
+  // No attack commands during peace (the sim rejects them) or in tutorial mode.
+  if (b.passive) {
+    const ids = v.mySquads.filter((s) => s.order === 'attack' && !onMyHalf(v, { x: s.x + (v.myHome.x < v.foeHome.x ? 3000 : -3000), y: s.y })).map((s) => s.id);
+    if (ids.length > 0) emit(ctx, { t: 'retreat', squads: ids });
+    return;
+  }
+  if (inPeace(v)) return;
+  // Before the bot's own aggression starts it only fights back on its own half.
+  const enemies = aggressionOk(b, v) ? v.enemySquads : v.enemySquads.filter((e) => onMyHalf(v, e));
+  if (enemies.length === 0) return;
   const mine = v.mySquads.filter((s) => s.kind !== 'ram' && b.roles.get(s.id) !== 'retreat');
 
   // --- retreat badly damaged squads unless the local fight is won

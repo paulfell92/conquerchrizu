@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { cloneState, computeVisibility, createGame, isWalkable, validateCommand } from '../src/sim';
 import type { Command, GameState, PlayerId, Squad } from '../src/sim';
 import { LocalRelay } from '../src/net/localRelay';
-import { Bot, personalityFromSeed } from '../src/bot';
+import { Bot, difficultyIncomePct, personalityFromSeed } from '../src/bot';
 import type { Difficulty, Personality } from '../src/bot';
 import { BotRng } from '../src/bot/rng';
 import { counterFactor } from '../src/bot/view';
@@ -180,4 +180,57 @@ describe.skipIf(!READY)('bot vs sim', () => {
     }
     expect(hardWins).toBeGreaterThanOrEqual(Math.ceil(N * 0.66));
   }, 600_000);
+});
+
+describe.skipIf(!READY)('bot peace phase and tutorial mode', () => {
+  it('exports income handicap per difficulty', () => {
+    expect(difficultyIncomePct('easy')).toBe(80);
+    expect(difficultyIncomePct('normal')).toBe(100);
+    expect(difficultyIncomePct('hard')).toBe(110);
+  });
+
+  function run(peaceTicks: number, ticks: number, opts: { passive?: boolean; diff?: Difficulty } = {}) {
+    const state = createGame({ ...cfg(21), peaceTicks });
+    const relay = new LocalRelay(state, 1_000_000);
+    const bots = [0, 1].map(
+      (p) => new Bot({ player: p as PlayerId, difficulty: opts.diff ?? 'hard', seed: 40 + p, personality: 'rusher', passive: p === 1 ? opts.passive : false }),
+    );
+    const log: { tick: number; player: number; cmd: Command }[] = [];
+    let maxX1 = 0;
+    let minX1 = Infinity;
+    while (state.winner === null && state.tick < ticks) {
+      for (const p of [0, 1] as PlayerId[]) {
+        for (const cmd of bots[p].update(state)) {
+          log.push({ tick: state.tick, player: p, cmd });
+          relay.submit(p, cmd);
+        }
+      }
+      relay.advance();
+      for (const s of state.squads) if (s.owner === 1) minX1 = Math.min(minX1, s.x);
+      maxX1 = Math.max(maxX1, 0);
+    }
+    return { state, log, minX1 };
+  }
+
+  it('issues no attack commands during peace and captures only neutral points', () => {
+    const peace = 180 * 20;
+    const { state, log } = run(peace, peace);
+    const attacks = log.filter((l) => l.cmd.t === 'attack');
+    expect(attacks).toEqual([]);
+    const rejected = state.events.filter((e) => e.t === 'rejected');
+    expect(rejected).toEqual([]);
+    // economy happened: buildings and squads trained, points captured
+    for (const p of [0, 1]) {
+      expect(state.players[p].stats.squadsTrained).toBeGreaterThan(1);
+      expect(state.points.filter((x) => x.owner === p).length).toBeGreaterThan(1);
+    }
+  }, 60_000);
+
+  it('passive bot never attacks and stays on its own half', () => {
+    const { log, minX1, state } = run(0, 20 * 60 * 8, { passive: true, diff: 'normal' });
+    expect(log.filter((l) => l.player === 1 && l.cmd.t === 'attack')).toEqual([]);
+    const mid = (state.mapW * 1000) / 2;
+    // player 1 lives on the right half; allow a small formation overshoot
+    expect(minX1).toBeGreaterThan(mid - 2500);
+  }, 60_000);
 });

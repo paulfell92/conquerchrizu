@@ -33,6 +33,16 @@ export interface BotOptions {
   personality?: Personality;
   /** Seeds the bot's own RNG (not the sim RNG) so bot-vs-bot runs are reproducible. */
   seed: number;
+  /**
+   * Tutorial mode: only captures points / builds / trains on its own half,
+   * never attacks or approaches the other half, ignores the end of peace.
+   */
+  passive?: boolean;
+}
+
+/** Income handicap for the bot player; pass as GameConfig.players[i].incomePct. */
+export function difficultyIncomePct(d: Difficulty): number {
+  return d === 'easy' ? 80 : d === 'hard' ? 110 : 100;
 }
 
 /** Deterministic personality for a seed (used when BotOptions.personality is omitted). */
@@ -46,7 +56,7 @@ export class Bot {
 
   constructor(readonly options: BotOptions) {
     this._personality = options.personality ?? personalityFromSeed(options.seed);
-    this.brain = new Brain(options.player, options.difficulty, this._personality, options.seed);
+    this.brain = new Brain(options.player, options.difficulty, this._personality, options.seed, options.passive ?? false);
   }
 
   /** Called once per sim tick, after step(). Returns commands to submit now (usually []). */

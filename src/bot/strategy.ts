@@ -7,7 +7,7 @@
 import { slots } from '../sim';
 import type { Building, BuildingKind, Resources, TechId, UnitKind } from '../sim';
 import { BUILDINGS, RULES, TECHS, UNITS } from '../content';
-import { affordable, costValue, emit, reserve, spend } from './brain';
+import { affordable, aggressionOk, costValue, emit, inPeace, peaceTicks, reserve, spend } from './brain';
 import type { Ctx } from './brain';
 import type { OpeningStep } from './personalities';
 import { basePower, believedEnemies, counterFactor, dangerAt, dist, enemyPowerEstimate, matchupPower, TPS } from './view';
@@ -280,14 +280,30 @@ export function updateStance(ctx: Ctx): void {
     if (e.kind === 'scout') continue;
     if (dist(e, v.myHome) < 12000) threat++;
   }
+  // Peace phase / post-peace delay / tutorial: build up and hold, never attack.
+  if (!aggressionOk(b, v)) {
+    b.stance = threat > 0 && !inPeace(v) && !b.passive ? 'defend' : 'expand';
+    return;
+  }
   if (threat > 0) {
     b.stance = 'defend';
     return;
   }
-  const pushNeed = b.pers.pushRatio * caution * (hasRams ? 0.85 : 1) * (late && vpLead < 0 ? 0.8 : 1);
+  // softer early game after peace, and the first attack needs a clearly bigger army
+  const sincePeace = v.tick - peaceTicks(v);
+  let caution2 = caution * (sincePeace < 5 * MIN ? b.diff.earlyCaution : 1);
+  if (!b.firstAttackDone) caution2 *= b.diff.firstAttackRatio;
+  const pushNeed = b.pers.pushRatio * caution2 * (hasRams ? 0.85 : 1) * (late && vpLead < 0 ? 0.8 : 1);
+  const minArmy = b.firstAttackDone ? 4 : b.difficulty === 'easy' ? 6 : 4;
   if (armyPop >= 6 && ratio >= pushNeed && (v.player.age >= 2 || ratio > pushNeed * 1.3)) b.stance = 'push';
-  else if (ratio >= b.pers.attackRatio * caution || (mine <= theirs && armyPop >= 4) || (late && vpLead < 0)) b.stance = 'attack';
+  else if (
+    armyPop >= minArmy &&
+    (ratio >= b.pers.attackRatio * caution2 || (b.firstAttackDone && mine <= theirs) || (late && vpLead < 0))
+  )
+    b.stance = 'attack';
+  else if (b.firstAttackDone && mine < theirs && armyPop >= 4) b.stance = 'attack';
   else b.stance = 'expand';
+  if (b.stance === 'attack' || b.stance === 'push') b.firstAttackDone = true;
 }
 
 // ---------------------------------------------------------------- main
@@ -321,11 +337,12 @@ export function runStrategy(ctx: Ctx): void {
     const tech: TechId = age === 1 ? 'age2' : 'age3';
     const def = TECHS[tech];
     const armyNeed = age === 1 ? b.pers.armyBeforeAge2 : b.pers.armyBeforeAge3;
-    if (!researching(v, tech) && nonTcCompleted(v) >= def.requiresBuildings && !threatened) {
+    const tooEarly = age === 1 && v.tick < b.diff.minAge2Tick;
+    if (!researching(v, tech) && nonTcCompleted(v) >= def.requiresBuildings && !threatened && !tooEarly) {
       const ready = armyPop >= armyNeed || popRoom <= 0;
       const minutes = v.tick / MIN;
-      const score = b.pers.ageUpWeight * (ready ? 1.4 : 0.5) * (1 + minutes / 12);
-      cands.push({ name: tech, score: n(score), cost: def.cost, run: () => tryResearch(ctx, tech), save: ready });
+      const score = b.pers.ageUpWeight * b.diff.ageUpMul * (ready ? 1.4 : 0.5) * (1 + minutes / 12);
+      cands.push({ name: tech, score: n(score), cost: def.cost, run: () => tryResearch(ctx, tech), save: ready && b.diff.ageUpMul >= 0.8 });
     }
   }
 

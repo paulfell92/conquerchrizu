@@ -63,12 +63,16 @@ export class Brain {
   /** Name of the investment we are currently saving for (debug/UI). */
   saving: string | null = null;
   readonly stats: BotStats = { commands: 0, validationFailures: 0, rejectedBySim: 0, budgetDenied: 0 };
+  /** Set once the bot has gone on the offensive (attack/push stance). */
+  firstAttackDone = false;
 
   constructor(
     readonly me: PlayerId,
     readonly difficulty: Difficulty,
     readonly personality: Personality,
     seed: number,
+    /** Tutorial mode: stays on its own half, never attacks. */
+    readonly passive = false,
   ) {
     this.rng = new BotRng(seed * 31 + me * 7919 + 17);
     this.diff = DIFFICULTIES[difficulty];
@@ -77,6 +81,27 @@ export class Brain {
     this.tokens = this.tokenCap;
     this.offset = (me * 7 + this.rng.int(5)) | 0;
   }
+}
+
+/** Peace phase length in ticks (GameConfig.peaceTicks, default 0). */
+export function peaceTicks(v: View): number {
+  return v.state.config.peaceTicks ?? 0;
+}
+
+export function inPeace(v: View): boolean {
+  return v.tick < peaceTicks(v);
+}
+
+/** May the bot take offensive actions (attack enemy squads/buildings/points, raid)? */
+export function aggressionOk(b: Brain, v: View): boolean {
+  if (b.passive) return false;
+  return v.tick >= peaceTicks(v) + b.diff.postPeaceDelay;
+}
+
+/** Position is on the bot's own half of the map (closer to own TC than to the enemy's). */
+export function onMyHalf(v: View, p: Vec): boolean {
+  const mid = (v.myHome.x + v.foeHome.x) / 2;
+  return v.myHome.x < v.foeHome.x ? p.x < mid : p.x > mid;
 }
 
 export interface Ctx {

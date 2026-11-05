@@ -6,7 +6,7 @@
  */
 import { RULES, UNITS } from '../content';
 import type { CapturePoint, Squad, Vec } from '../sim';
-import { emit } from './brain';
+import { aggressionOk, emit, onMyHalf } from './brain';
 import type { Ctx, Group, Objective } from './brain';
 import { pointIncomeValue } from './strategy';
 import { centroid, dangerAt, dist, matchupPower, squadPower, TPS } from './view';
@@ -119,9 +119,10 @@ function objectives(ctx: Ctx, groupPower: number, at: Vec, raider: boolean, take
   const out: Objective[] = [];
   const stance = b.stance;
   const caution = b.diff.attackCaution;
+  const aggressive = aggressionOk(b, v);
 
   const threats = baseThreats(v);
-  if (threats.length > 0) {
+  if (threats.length > 0 && v.tick >= (v.state.config.peaceTicks ?? 0)) {
     out.push({ kind: 'defendBase', pos: centroid(threats), score: 100 });
   }
 
@@ -145,6 +146,10 @@ function objectives(ctx: Ctx, groupPower: number, at: Vec, raider: boolean, take
     if (avoidUntil > v.tick) continue;
     const dFoe = dist(p, v.foeHome);
     const deep = dFoe < 13 * TILE;
+    // peace / post-peace delay: only neutral points outside the enemy base area;
+    // tutorial (passive): only points on the own half
+    if (!aggressive && (p.owner !== -1 || deep)) continue;
+    if (b.passive && !onMyHalf(v, p)) continue;
     let value = income + 8 + (p.owner === v.foe ? 6 : 0);
     if (isCenterPoint(v, p)) value += 10 * b.pers.centerBias;
     if (raider && danger < 1) value *= 1.4;
@@ -159,24 +164,28 @@ function objectives(ctx: Ctx, groupPower: number, at: Vec, raider: boolean, take
     out.push({ kind: 'capture', pos: { x: p.x, y: p.y }, point: p.id, score: (value * safety) / travel });
   }
 
-  if (stance === 'push' && !raider) {
+  if (stance === 'push' && !raider && aggressive) {
     out.push({ kind: 'push', pos: { ...v.foeHome }, score: 60 });
   }
-  // fallback: hold the own point closest to the enemy
+  out.push({ kind: 'hold', pos: holdPoint(v), score: 0.5 });
+  for (const o of out) o.score *= b.rng.noise(b.diff.noise);
+  out.sort((a, c) => c.score - a.score);
+  return out;
+}
+
+/** Defensive position: the own point closest to the enemy, on the own half. */
+function holdPoint(v: View): Vec {
   let hold: Vec = { x: Math.trunc(v.myHome.x + (v.foeHome.x - v.myHome.x) * 0.25), y: v.myHome.y };
   let bestD = Infinity;
   for (const p of v.points) {
-    if (p.owner !== v.me) continue;
+    if (p.owner !== v.me || !onMyHalf(v, p)) continue;
     const d = dist(p, v.foeHome);
     if (d < bestD) {
       bestD = d;
       hold = { x: p.x, y: p.y };
     }
   }
-  out.push({ kind: 'hold', pos: hold, score: 0.5 });
-  for (const o of out) o.score *= b.rng.noise(b.diff.noise);
-  out.sort((a, c) => c.score - a.score);
-  return out;
+  return hold;
 }
 
 function sameObjective(a: Objective | null, c: Objective): boolean {
@@ -252,6 +261,13 @@ function runGroup(ctx: Ctx, g: Group, raider: boolean, taken: Set<number>): void
   }
 
   const obj = best;
+  // smaller attack waves (easy): only the first `waveMax` squads go on offense
+  const offensive = obj.kind === 'push' || (obj.kind === 'capture' && obj.point !== undefined && v.points.find((p) => p.id === obj.point)?.owner === v.foe);
+  if (offensive && squads.length > b.diff.waveMax) {
+    const stay = squads.slice(b.diff.waveMax);
+    squads.length = b.diff.waveMax;
+    steer(ctx, stay, holdPoint(v), 4 * TILE);
+  }
   if (g.gathering) {
     const stage = stagingPoint(v, obj.pos);
     let spread = 0;
@@ -292,8 +308,12 @@ function runScouts(ctx: Ctx, taken: Set<number>): void {
     }
     // harass: kill a visible enemy scout or capture an empty point
     let best: { pos: Vec; id: number; score: number } | null = null;
+    const aggressive = aggressionOk(b, v);
     for (const p of v.points) {
       if (p.owner === v.me || taken.has(p.id)) continue;
+      // no scout raids before aggression is allowed: neutral points outside the enemy base only
+      if (!aggressive && (p.owner !== -1 || dist(p, v.foeHome) < 13 * TILE)) continue;
+      if (b.passive && !onMyHalf(v, p)) continue;
       const danger = dangerAt(v, p, 7 * TILE);
       if (danger > 0) continue;
       if ((b.avoid.get(p.id) ?? -1) > v.tick) continue;
@@ -347,8 +367,16 @@ function runRams(ctx: Ctx): void {
 
 // ---------------------------------------------------------------- main
 
+/** Tutorial mode: pull back squads the sim's auto-acquire dragged across the middle. */
+function leashPassive(ctx: Ctx): void {
+  const { v } = ctx;
+  const ids = v.mySquads.filter((s) => !onMyHalf(v, { x: s.x + (v.myHome.x < v.foeHome.x ? 3 : -3) * TILE, y: s.y }) && s.order !== 'retreat').map((s) => s.id);
+  if (ids.length > 0) emit(ctx, { t: 'retreat', squads: ids });
+}
+
 export function runOperations(ctx: Ctx): void {
   const { b, v } = ctx;
+  if (b.passive) leashPassive(ctx);
   updateRoles(ctx);
   for (const [pid, until] of [...b.avoid]) if (until <= v.tick) b.avoid.delete(pid);
   const army = v.mySquads.filter((s) => b.roles.get(s.id) === 'army' && s.kind !== 'ram');

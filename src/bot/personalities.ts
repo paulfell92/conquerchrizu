@@ -33,23 +33,40 @@ export interface DifficultyDef {
   queueDepth: number;
   /** Multiplier on the personality's attack thresholds (>1 = more cautious). */
   attackCaution: number;
+  /** Extra caution multiplier during the first 5 min after peace (softer early game). */
+  earlyCaution: number;
+  /** Ticks the bot waits after the peace phase before its first attack. */
+  postPeaceDelay: number;
+  /** Extra strength ratio needed for the FIRST attack (clearly bigger army). */
+  firstAttackRatio: number;
+  /** Max squads sent on an offensive objective at once (rest stay home). */
+  waveMax: number;
+  /** Multiplier on age-up utility, and earliest tick (from game start) for age 2. */
+  ageUpMul: number;
+  minAge2Tick: number;
 }
 
 export const DIFFICULTIES: Record<Difficulty, DifficultyDef> = {
   easy: {
-    tacticsEvery: 30, opsEvery: 40, strategyEvery: 100, cpm: 30,
-    noise: 0.25, counterWeight: 0.4, counterSkip: 0.35, focusFire: false,
-    retreatChance: 0.3, regroup: false, maxGroups: 1, queueDepth: 1, attackCaution: 1.25,
+    tacticsEvery: 40, opsEvery: 40, strategyEvery: 120, cpm: 15,
+    noise: 0.3, counterWeight: 0.2, counterSkip: 0.6, focusFire: false,
+    retreatChance: 0, regroup: false, maxGroups: 1, queueDepth: 1, attackCaution: 1.3,
+    earlyCaution: 1.3, postPeaceDelay: 60 * 20, firstAttackRatio: 1.6, waveMax: 4,
+    ageUpMul: 0.5, minAge2Tick: 8 * 60 * 20,
   },
   normal: {
     tacticsEvery: 16, opsEvery: 20, strategyEvery: 80, cpm: 60,
     noise: 0.1, counterWeight: 0.8, counterSkip: 0.1, focusFire: true,
     retreatChance: 0.8, regroup: true, maxGroups: 2, queueDepth: 1, attackCaution: 1.0,
+    earlyCaution: 1.15, postPeaceDelay: 30 * 20, firstAttackRatio: 1.2, waveMax: 99,
+    ageUpMul: 0.9, minAge2Tick: 4 * 60 * 20,
   },
   hard: {
     tacticsEvery: 6, opsEvery: 12, strategyEvery: 60, cpm: 120,
     noise: 0.02, counterWeight: 1.0, counterSkip: 0, focusFire: true,
     retreatChance: 1, regroup: true, maxGroups: 3, queueDepth: 2, attackCaution: 0.95,
+    earlyCaution: 1.0, postPeaceDelay: 0, firstAttackRatio: 1.0, waveMax: 99,
+    ageUpMul: 1.0, minAge2Tick: 0,
   },
 };
 

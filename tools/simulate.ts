@@ -14,6 +14,8 @@
  *   --set k=v,...      inline overrides, e.g. --set RULES.vpDrainPerPoint=2,UNITS.spear.cost.food=50
  *   --json             machine-readable output (one JSON object)
  *   --quiet            no per-game lines
+ *   --peace SEC        peace phase in seconds (default 180)
+ *   --no-handicap      don't apply difficultyIncomePct
  *   --trace            print a per-30s timeline (VP, points, army, age, stance) per game
  *   --max-minutes M    abort a game after M minutes of game time (default: rules hard cap + 1)
  *
@@ -23,7 +25,7 @@ import { createGame, formatClock } from '../src/sim';
 import type { GameState, PlayerId, WinReason } from '../src/sim';
 import * as content from '../src/content';
 import { LocalRelay } from '../src/net/localRelay';
-import { Bot, personalityFromSeed } from '../src/bot';
+import { Bot, difficultyIncomePct, personalityFromSeed } from '../src/bot';
 import type { Difficulty, Personality } from '../src/bot';
 
 // Node globals without @types/node (not a dependency of this project).
@@ -52,6 +54,8 @@ const mapId = arg('map', Object.keys(content.MAPS)[0])!;
 const json = has('json');
 const quiet = has('quiet') || json;
 const trace = has('trace');
+const peaceSec = Number(arg('peace', '180'));
+const handicap = !has('no-handicap');
 
 for (const d of [diffA, diffB]) {
   if (!['easy', 'normal', 'hard'].includes(d)) throw new Error('bad difficulty ' + d);
@@ -123,20 +127,24 @@ function pickPers(p: string, seed: number): Personality {
 }
 
 const hardCap = (content.RULES as { hardCapTicks: number }).hardCapTicks;
-const maxTicks = arg('max-minutes') ? Number(arg('max-minutes')) * 60 * 20 : hardCap + 20 * 60;
+const maxTicks = arg('max-minutes') ? Number(arg('max-minutes')) * 60 * 20 : hardCap + peaceSec * 20 + 20 * 60;
 
 function runGame(g: number): GameResult {
   const seed = baseSeed * 1000 + g;
   const sideA = (g % 2) as PlayerId;
   const pA = pickPers(persA, seed * 2 + 1);
   const pB = pickPers(persB, seed * 2 + 2);
+  const diffOf = (p: number) => (p === sideA ? diffA : diffB);
   const state: GameState = createGame({
     seed,
     mapId,
-    players: [
-      { name: 'P0', color: '#36c', isBot: true },
-      { name: 'P1', color: '#c33', isBot: true },
-    ],
+    peaceTicks: peaceSec * 20,
+    players: [0, 1].map((p) => ({
+      name: 'P' + p,
+      color: p === 0 ? '#36c' : '#c33',
+      isBot: true,
+      incomePct: handicap ? difficultyIncomePct(diffOf(p)) : 100,
+    })),
   });
   const relay = new LocalRelay(state, 1_000_000);
   const bots: Bot[] = [];
@@ -255,6 +263,8 @@ const avg = (f: (r: GameResult) => number) => Math.round((10 * results.reduce((s
 
 const summary = {
   games: n,
+  peaceSeconds: peaceSec,
+  incomeHandicap: handicap,
   a: diffA,
   b: diffB,
   overrides,
@@ -283,7 +293,7 @@ if (json) {
   console.log(JSON.stringify({ summary, results }, null, 2));
 } else {
   console.log('');
-  console.log(`=== ${n} games  A=${diffA}  B=${diffB}  (${summary.wallSeconds}s wall) ===`);
+  console.log(`=== ${n} games  A=${diffA}  B=${diffB}  peace ${peaceSec}s  handicap ${handicap ? 'on' : 'off'}  (${summary.wallSeconds}s wall) ===`);
   if (Object.keys(overrides).length) console.log('overrides:', JSON.stringify(overrides));
   console.log(`win rate   A ${summary.winRateA}%   B ${summary.winRateB}%   draw ${summary.drawRate}%   (player0 side ${summary.winRatePlayer0}%)`);
   console.log(
