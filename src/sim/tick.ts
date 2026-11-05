@@ -25,6 +25,7 @@ import { applyCommand, endGame, orderMove, setIdle } from './commands';
 import { newSquad } from './init';
 
 const REPATH_TICKS = 10;
+const REPATH_DRIFT = 300;
 /** Auto-acquired chases give up beyond (sight + LEASH_EXTRA) from where they started. */
 const LEASH_EXTRA = 4000;
 /** Separation: own squads closer than this (center to center) push apart. */
@@ -90,8 +91,7 @@ function spawnPos(state: GameState, b: Building): Vec {
     dy = tc ? b.y - tc.y : 0;
   }
   const d = isqrt(dx * dx + dy * dy);
-  if (d === 0) return nearestWalkable(state, b.x + r, b.y);
-  // offset each spawn slightly by queue count so consecutive spawns do not stack exactly
+  if (d === 0) return nearestWalkable(state, b.x + (b.owner === 0 ? r : -r), b.y);
   return nearestWalkable(state, b.x + Math.trunc((dx * r) / d), b.y + Math.trunc((dy * r) / d));
 }
 
@@ -193,6 +193,40 @@ function followPath(state: GameState, s: Squad, speed: number): boolean {
   return s.path.length === 0;
 }
 
+// Start-of-movement snapshot of squad positions: every squad decides from the
+// same picture, so the id iteration order cannot favour a side.
+let snapX: number[] = [];
+let snapY: number[] = [];
+let snapIds: number[] = [];
+
+function takeSnapshot(state: GameState): void {
+  const n = state.squads.length;
+  snapX = new Array(n);
+  snapY = new Array(n);
+  snapIds = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const q = state.squads[i];
+    snapX[i] = q.x;
+    snapY[i] = q.y;
+    snapIds[i] = q.id;
+  }
+}
+
+/** Snapshot position of an entity (buildings never move). */
+function posOf(e: Squad | Building): Vec {
+  if (isBuilding(e)) return e;
+  let lo = 0;
+  let hi = snapIds.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const v = snapIds[mid];
+    if (v === e.id) return { x: snapX[mid], y: snapY[mid] };
+    if (v < e.id) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return e;
+}
+
 function targetOf(state: GameState, id: number | null): Squad | Building | null {
   if (id === null) return null;
   const s = findSquad(state, id);
@@ -208,9 +242,10 @@ function acquire(state: GameState, s: Squad): Squad | Building | null {
   let best: Squad | Building | null = null;
   let bestD = 0;
   if (s.kind !== 'ram') {
-    for (const e of state.squads) {
+    for (let i = 0; i < state.squads.length; i++) {
+      const e = state.squads[i];
       if (e.owner === s.owner || e.hp <= 0) continue;
-      const d = dist2(s.x, s.y, e.x, e.y);
+      const d = dist2(s.x, s.y, snapX[i], snapY[i]);
       if (d <= sight2 && (best === null || d < bestD)) {
         best = e;
         bestD = d;
@@ -231,6 +266,7 @@ function acquire(state: GameState, s: Squad): Squad | Building | null {
 }
 
 function movement(state: GameState): void {
+  takeSnapshot(state);
   for (const s of state.squads) {
     if (s.hp <= 0) continue;
     const def = UNITS[s.kind];
@@ -262,9 +298,11 @@ function movement(state: GameState): void {
 
 function chase(state: GameState, s: Squad, t: Squad | Building): void {
   const def = UNITS[s.kind];
-  if (inRange(s, t, def.range)) {
+  const tp = posOf(t);
+  const reach = def.range + bodyRadius(s) + bodyRadius(t);
+  if (dist2(s.x, s.y, tp.x, tp.y) <= reach * reach) {
     s.path = [];
-    const f = octant(t.x - s.x, t.y - s.y);
+    const f = octant(tp.x - s.x, tp.y - s.y);
     if (f >= 0) s.facing = f;
     return;
   }
@@ -275,14 +313,19 @@ function chase(state: GameState, s: Squad, t: Squad | Building): void {
       return;
     }
   }
-  if (s.path.length === 0 || (state.tick + s.id) % REPATH_TICKS === 0) {
-    s.path = findPath(state, s.x, s.y, t.x, t.y);
+  // repath when there is no path, or (at most every REPATH_TICKS, same phase for
+  // everyone) when the target drifted away from the path end
+  let repath = s.path.length === 0;
+  if (!repath && state.tick % REPATH_TICKS === 0) {
+    const end = s.path[s.path.length - 1];
+    repath = dist2(end.x, end.y, tp.x, tp.y) > REPATH_DRIFT * REPATH_DRIFT;
   }
+  if (repath) s.path = findPath(state, s.x, s.y, tp.x, tp.y);
   // do not overshoot deep into the target: stop a little inside the attack range
-  const need = isqrt(dist2(s.x, s.y, t.x, t.y)) - (def.range + bodyRadius(s) + bodyRadius(t)) + APPROACH_MARGIN;
+  const need = isqrt(dist2(s.x, s.y, tp.x, tp.y)) - reach + APPROACH_MARGIN;
   const speed = need < def.speed && need > 0 && s.path.length === 1 ? need : def.speed;
   const saved = s.dest;
-  s.dest = { x: t.x, y: t.y };
+  s.dest = { x: tp.x, y: tp.y };
   followPath(state, s, speed);
   s.dest = saved;
 }
@@ -292,9 +335,15 @@ function engaged(s: Squad): boolean {
   return s.order === 'attack' && s.path.length === 0;
 }
 
+/**
+ * Separation: all pushes are computed from the same positions, summed per
+ * squad, then applied (order independent, mirror symmetric).
+ */
 function separation(state: GameState): void {
   const sq = state.squads;
   const n = sq.length;
+  let ax: number[] | null = null;
+  let ay: number[] | null = null;
   for (let i = 0; i < n; i++) {
     const a = sq[i];
     for (let j = i + 1; j < n; j++) {
@@ -306,6 +355,10 @@ function separation(state: GameState): void {
       if (dy >= SEP_DIST || dy <= -SEP_DIST) continue;
       const d2 = dx * dx + dy * dy;
       if (d2 >= SEP_DIST * SEP_DIST) continue;
+      // squads engaged in combat hold their ground; the other one yields
+      const ea = engaged(a);
+      const eb = engaged(b);
+      if (ea && eb) continue;
       const d = isqrt(d2);
       let push = (SEP_DIST - d) >> 2;
       if (push > SEP_MAX_PUSH) push = SEP_MAX_PUSH;
@@ -313,29 +366,39 @@ function separation(state: GameState): void {
       let px: number;
       let py: number;
       if (d === 0) {
-        // identical positions: deterministic direction from ids
-        const k = (a.id + b.id) & 3;
-        px = k === 0 ? push : k === 1 ? -push : 0;
-        py = k === 2 ? push : k === 3 ? -push : 0;
+        // identical positions: split vertically (y is not mirrored), lower id up
+        px = 0;
+        py = push;
       } else {
         px = Math.trunc((dx * push) / d);
         py = Math.trunc((dy * push) / d);
       }
-      // squads engaged in melee/ranged combat hold their ground; the other one yields
-      const ea = engaged(a);
-      const eb = engaged(b);
-      if (ea && eb) continue;
       const fa = eb ? 2 : ea ? 0 : 1;
       const fb = ea ? 2 : eb ? 0 : 1;
-      if (fa > 0 && walkable(state, a.x - px * fa, a.y - py * fa)) {
-        a.x -= px * fa;
-        a.y -= py * fa;
+      if (!ax || !ay) {
+        ax = new Array(n).fill(0);
+        ay = new Array(n).fill(0);
       }
-      if (fb > 0 && walkable(state, b.x + px * fb, b.y + py * fb)) {
-        b.x += px * fb;
-        b.y += py * fb;
-      }
+      ax[i] -= px * fa;
+      ay[i] -= py * fa;
+      ax[j] += px * fb;
+      ay[j] += py * fb;
     }
+  }
+  if (!ax || !ay) return;
+  for (let i = 0; i < n; i++) {
+    let mx = ax[i];
+    let my = ay[i];
+    if (mx === 0 && my === 0) continue;
+    const lim = SEP_MAX_PUSH * 2;
+    mx = mx > lim ? lim : mx < -lim ? -lim : mx;
+    my = my > lim ? lim : my < -lim ? -lim : my;
+    const q = sq[i];
+    if (walkable(state, q.x + mx, q.y + my)) {
+      q.x += mx;
+      q.y += my;
+    } else if (mx !== 0 && walkable(state, q.x + mx, q.y)) q.x += mx;
+    else if (my !== 0 && walkable(state, q.x, q.y + my)) q.y += my;
   }
 }
 
@@ -426,11 +489,10 @@ function combat(state: GameState): void {
     emit(state, { t: 'hit', from: h.from.id, to: t.id, dmg: h.dmg, ranged: h.ranged });
     alertUnderAttack(state, t.owner, t.x, t.y);
     if (!isBuilding(h.from)) h.from.lastCombatTick = state.tick;
-    if (!isBuilding(t)) {
-      t.lastCombatTick = state.tick;
-      retaliate(state, t, h.from);
-    }
+    if (!isBuilding(t)) t.lastCombatTick = state.tick;
   }
+  // reactions only after ALL damage of this tick is applied (order independent)
+  for (const h of hits) if (!isBuilding(h.to)) retaliate(state, h.to, h.from);
 
   // deaths (squads)
   let anyDead = false;

@@ -31,12 +31,26 @@ export function tileOf(v: number): number {
   return Math.floor(v / TILE);
 }
 
+/**
+ * Tile column of an x coordinate, mirror-symmetric: a point exactly on a
+ * vertical tile border belongs to the column closer to the map center.
+ */
+export function tileColSym(state: GameState, x: number): number {
+  const tx = Math.floor(x / TILE);
+  if (x - tx * TILE !== 0 || tx === 0) return tx;
+  const mid2 = state.mapW - 1; // 2 * center column
+  const da = 2 * (tx - 1) - mid2;
+  const db = 2 * tx - mid2;
+  return (da < 0 ? -da : da) < (db < 0 ? -db : db) ? tx - 1 : tx;
+}
+
 export function tileCenter(t: number): number {
   return t * TILE + (TILE >> 1);
 }
 
+/** Strictly inside the map (0 and W*TILE excluded) so the bounds are mirror-symmetric (x -> W*TILE - x). */
 export function inBounds(state: GameState, x: number, y: number): boolean {
-  return x >= 0 && y >= 0 && x < state.mapW * TILE && y < state.mapH * TILE;
+  return x > 0 && y > 0 && x < state.mapW * TILE && y < state.mapH * TILE;
 }
 
 export function tileBlocked(state: GameState, tx: number, ty: number): boolean {
@@ -44,9 +58,24 @@ export function tileBlocked(state: GameState, tx: number, ty: number): boolean {
   return state.blocked[ty * state.mapW + tx] !== 0;
 }
 
+/**
+ * A point exactly on a tile border belongs to BOTH tiles and is walkable only
+ * if both are, so walkability is mirror-symmetric (floor() alone would favour
+ * the right/lower tile).
+ */
 export function walkable(state: GameState, x: number, y: number): boolean {
   if (!inBounds(state, x, y)) return false;
-  return state.blocked[tileOf(y) * state.mapW + tileOf(x)] === 0;
+  const W = state.mapW;
+  const tx = Math.floor(x / TILE);
+  const ty = Math.floor(y / TILE);
+  const b = state.blocked;
+  if (b[ty * W + tx] !== 0) return false;
+  const ex = x - tx * TILE === 0;
+  const ey = y - ty * TILE === 0;
+  if (ex && b[ty * W + tx - 1] !== 0) return false;
+  if (ey && b[(ty - 1) * W + tx] !== 0) return false;
+  if (ex && ey && b[(ty - 1) * W + tx - 1] !== 0) return false;
+  return true;
 }
 
 /** Walkable with a small clearance box around the point (used for straight-line checks). */
@@ -79,17 +108,23 @@ export function lineWalkable(state: GameState, ax: number, ay: number, bx: numbe
   return true;
 }
 
-/** Nearest walkable tile (center) to a world position, ties broken by y then x. */
+/**
+ * Nearest walkable tile (center) to a world position. Ties: closer to the
+ * vertical map center line (mirror-invariant), then smaller y, then smaller x
+ * (only reached for queries exactly on the center line).
+ */
 export function nearestWalkable(state: GameState, x: number, y: number): Vec {
-  const cx = Math.min(Math.max(x, 0), state.mapW * TILE - 1);
-  const cy = Math.min(Math.max(y, 0), state.mapH * TILE - 1);
+  const Wm = state.mapW * TILE;
+  const cx = Math.min(Math.max(x, 1), Wm - 1);
+  const cy = Math.min(Math.max(y, 1), state.mapH * TILE - 1);
   if (walkable(state, cx, cy)) return { x: cx, y: cy };
-  const tx = tileOf(cx);
+  const tx = tileColSym(state, cx);
   const ty = tileOf(cy);
   const maxR = state.mapW > state.mapH ? state.mapW : state.mapH;
   for (let r = 1; r <= maxR; r++) {
     let best = -1;
     let bestD = 0;
+    let bestC = 0;
     let bx = 0;
     let by = 0;
     for (let yy = ty - r; yy <= ty + r; yy++) {
@@ -99,9 +134,11 @@ export function nearestWalkable(state: GameState, x: number, y: number): Vec {
         const px = tileCenter(xx);
         const py = tileCenter(yy);
         const d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
-        if (best < 0 || d < bestD) {
+        const c = 2 * px > Wm ? 2 * px - Wm : Wm - 2 * px;
+        if (best < 0 || d < bestD || (d === bestD && c < bestC)) {
           best = 1;
           bestD = d;
+          bestC = c;
           bx = px;
           by = py;
         }
@@ -121,10 +158,18 @@ function heuristic(ax: number, ay: number, bx: number, by: number): number {
 const NX = [1, 0, -1, 0, 1, -1, -1, 1];
 const NY = [0, 1, 0, -1, 1, 1, -1, -1];
 
-/** Raw A*: tile indices from start (exclusive) to goal (inclusive), or null. */
-export function astar(state: GameState, sx: number, sy: number, gx: number, gy: number): number[] | null {
+/**
+ * Raw A*: tile indices from start (exclusive) to goal (inclusive), or null.
+ * Side symmetry: the search runs in a canonical frame where the goal is never
+ * left of the start (x mirrored otherwise), so mirrored queries explore and
+ * break ties identically and return exactly mirrored paths.
+ */
+export function astar(state: GameState, rsx: number, sy: number, rgx: number, gy: number): number[] | null {
   const W = state.mapW;
   const H = state.mapH;
+  const flip = rgx < rsx || (rgx === rsx && 2 * rsx > W - 1);
+  const sx = flip ? W - 1 - rsx : rsx;
+  const gx = flip ? W - 1 - rgx : rgx;
   const n = W * H;
   ensure(n);
   gen++;
@@ -192,7 +237,10 @@ export function astar(state: GameState, sx: number, sy: number, gx: number, gy: 
       const out: number[] = [];
       let c = goal;
       while (c !== start) {
-        out.push(c);
+        if (flip) {
+          const cx0 = c % W;
+          out.push(c - cx0 + (W - 1 - cx0));
+        } else out.push(c);
         c = parent[c];
       }
       out.reverse();
@@ -206,10 +254,12 @@ export function astar(state: GameState, sx: number, sy: number, gx: number, gy: 
       const ny = cy + NY[k];
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
       const ni = ny * W + nx;
-      if (blocked[ni] !== 0) continue;
+      const rnx = flip ? W - 1 - nx : nx;
+      if (blocked[ny * W + rnx] !== 0) continue;
       if (k >= 4) {
         // no corner cutting
-        if (blocked[cy * W + nx] !== 0 || blocked[ny * W + cx] !== 0) continue;
+        const rcx = flip ? W - 1 - cx : cx;
+        if (blocked[cy * W + rnx] !== 0 || blocked[ny * W + rcx] !== 0) continue;
       }
       if (closedGen[ni] === gen) continue;
       const ng = g + (k >= 4 ? 14 : 10);
@@ -231,9 +281,9 @@ export function astar(state: GameState, sx: number, sy: number, gx: number, gy: 
 export function findPath(state: GameState, sx: number, sy: number, tx: number, ty: number): Vec[] {
   let dest: Vec = walkable(state, tx, ty) ? { x: tx, y: ty } : nearestWalkable(state, tx, ty);
   if (lineWalkable(state, sx, sy, dest.x, dest.y)) return [dest];
-  const stx = tileOf(sx);
+  const stx = tileColSym(state, sx);
   const sty = tileOf(sy);
-  const gtx = tileOf(dest.x);
+  const gtx = tileColSym(state, dest.x);
   const gty = tileOf(dest.y);
   const tiles = astar(state, stx, sty, gtx, gty);
   if (!tiles) return [];

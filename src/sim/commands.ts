@@ -8,6 +8,7 @@ import { TILE } from './types';
 import { findBuilding, findSquad, completedNonTcBuildings, buildingCount, getTownCenter, enemyOf, reject, emit } from './world';
 import { mapOf, newBuilding, slotPos } from './init';
 import { findPath, nearestWalkable } from './pathfinding';
+import { isqrt } from './fixed';
 
 const RES_KEYS: (keyof Resources)[] = ['food', 'wood', 'gold'];
 
@@ -175,19 +176,68 @@ export function validate(state: GameState, player: PlayerId, cmd: Command): stri
 
 // ---------------------------------------------------------------- formation
 
-/** Grid offsets (in squad spacings) sorted by distance, then y, then x. */
-const FORMATION: { x: number; y: number }[] = (() => {
-  const out: { x: number; y: number }[] = [];
-  for (let y = -4; y <= 4; y++) for (let x = -4; x <= 4; x++) out.push({ x, y });
-  out.sort((a, b) => a.x * a.x + a.y * a.y - (b.x * b.x + b.y * b.y) || a.y - b.y || a.x - b.x);
-  return out;
-})();
 const SPACING = 1400;
 
-export function formationDest(state: GameState, center: Vec, index: number, count: number): Vec {
-  if (count <= 1) return nearestWalkable(state, center.x, center.y);
-  const o = FORMATION[index % FORMATION.length];
-  return nearestWalkable(state, center.x + o.x * SPACING, center.y + o.y * SPACING);
+/**
+ * Formation destinations for a group move, oriented along the move direction
+ * (centroid -> click point): ranks perpendicular to it, block centred on the
+ * click point. Squads are assigned by their current forward/lateral position,
+ * so the result is mirror-symmetric for mirrored inputs.
+ */
+export function formationDests(state: GameState, player: PlayerId, list: Squad[], center: Vec): Vec[] {
+  const n = list.length;
+  if (n === 1) return [nearestWalkable(state, center.x, center.y)];
+  // centroid computed relative to the map middle (trunc is odd-symmetric -> mirror exact)
+  const mid = (state.mapW * TILE) >> 1;
+  let rx = 0;
+  let cy = 0;
+  for (const s of list) {
+    rx += s.x - mid;
+    cy += s.y;
+  }
+  const cx = mid + Math.trunc(rx / n);
+  cy = Math.trunc(cy / n);
+  let fx = center.x - cx;
+  let fy = center.y - cy;
+  let L = isqrt(fx * fx + fy * fy);
+  if (L < 500) {
+    // no clear direction: face the enemy side
+    fx = player === 0 ? 1000 : -1000;
+    fy = 0;
+    L = 1000;
+  }
+  // lateral axis: perpendicular, pointing down (+y); if horizontal, toward the map center
+  let lx = -fy;
+  let ly = fx;
+  if (ly < 0 || (ly === 0 && (cx < mid ? lx < 0 : lx > 0))) {
+    lx = -lx;
+    ly = -ly;
+  }
+  const cols = n <= 3 ? n : isqrt(n - 1) + 1;
+  const ranks = Math.ceil(n / cols);
+  // order squads: front-most first (forward projection desc), then lateral asc, then id
+  const keyed = list.map((s, i) => ({
+    i,
+    id: s.id,
+    fwd: Math.trunc(((s.x - cx) * fx + (s.y - cy) * fy) / L),
+    lat: Math.trunc(((s.x - cx) * lx + (s.y - cy) * ly) / L),
+  }));
+  keyed.sort((a, b) => b.fwd - a.fwd || a.id - b.id);
+  const out: Vec[] = new Array(n);
+  const half = SPACING >> 1;
+  for (let r = 0; r < ranks; r++) {
+    const rank = keyed.slice(r * cols, r * cols + cols);
+    rank.sort((a, b) => a.lat - b.lat || a.id - b.id);
+    const k = rank.length;
+    const fOff = (ranks - 1 - 2 * r) * half;
+    for (let c = 0; c < k; c++) {
+      const lOff = (2 * c - (k - 1)) * half;
+      const x = center.x + Math.trunc((fx * fOff + lx * lOff) / L);
+      const y = center.y + Math.trunc((fy * fOff + ly * lOff) / L);
+      out[rank[c].i] = nearestWalkable(state, x, y);
+    }
+  }
+  return out;
 }
 
 export function orderMove(state: GameState, s: Squad, dest: Vec, order: 'move' | 'retreat'): void {
@@ -230,7 +280,8 @@ export function applyCommand(state: GameState, player: PlayerId, cmd: Command): 
     case 'move': {
       const list = ownSquads(state, player, cmd.squads);
       const center = nearestWalkable(state, Math.trunc(cmd.x), Math.trunc(cmd.y));
-      list.forEach((s, i) => orderMove(state, s, formationDest(state, center, i, list.length), 'move'));
+      const dests = formationDests(state, player, list, center);
+      list.forEach((s, i) => orderMove(state, s, dests[i], 'move'));
       return;
     }
     case 'attack': {
@@ -249,7 +300,8 @@ export function applyCommand(state: GameState, player: PlayerId, cmd: Command): 
     case 'retreat': {
       const list = ownSquads(state, player, cmd.squads);
       const center = retreatPoint(state, player)!;
-      list.forEach((s, i) => orderMove(state, s, formationDest(state, center, i, list.length), 'retreat'));
+      const dests = formationDests(state, player, list, center);
+      list.forEach((s, i) => orderMove(state, s, dests[i], 'retreat'));
       return;
     }
     case 'build': {
